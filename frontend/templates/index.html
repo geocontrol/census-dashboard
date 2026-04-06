@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UK Census 2021 — LSOA Explorer</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/static/css/dashboard.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════ HEADER -->
+<header class="app-header">
+  <div class="header-brand">
+    <svg class="brand-icon" viewBox="0 0 32 32" fill="none">
+      <rect x="2" y="2" width="13" height="13" rx="2" fill="var(--accent)"/>
+      <rect x="17" y="2" width="13" height="13" rx="2" fill="var(--accent-2)"/>
+      <rect x="2" y="17" width="13" height="13" rx="2" fill="var(--accent-2)"/>
+      <rect x="17" y="17" width="13" height="13" rx="2" fill="var(--accent)"/>
+    </svg>
+    <span class="brand-name">Census<em>Explorer</em></span>
+  </div>
+  <div class="header-meta">
+    <span class="badge">2021 England &amp; Wales</span>
+    <span class="badge badge-lsoa">LSOA Level</span>
+    <span id="status-badge" class="badge badge-status">Loading…</span>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════ LAYOUT -->
+<div class="app-layout">
+
+  <!-- ─────────── LEFT SIDEBAR: Controls -->
+  <aside class="sidebar-left" id="sidebar-left">
+    <div class="sidebar-section">
+      <h3 class="sidebar-title">Area Filter</h3>
+      <div class="field-group">
+        <label class="field-label">Local Authority</label>
+        <select id="lad-select" class="select-control">
+          <option value="">All England &amp; Wales</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3 class="sidebar-title">Dataset</h3>
+      <div id="dataset-categories" class="dataset-list">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3 class="sidebar-title">Colour Scale</h3>
+      <div class="legend-container" id="legend">
+        <div class="legend-gradient" id="legend-gradient"></div>
+        <div class="legend-labels" id="legend-labels"></div>
+      </div>
+      <div class="stats-grid" id="stats-grid"></div>
+    </div>
+
+    <div class="sidebar-section sidebar-footer">
+      <p class="footer-text">Data: <a href="https://www.ons.gov.uk/census" target="_blank">ONS Census 2021</a></p>
+      <p class="footer-text">Boundaries: <a href="https://geoportal.statistics.gov.uk" target="_blank">ONS Open Geography Portal</a></p>
+    </div>
+  </aside>
+
+  <!-- ─────────── MAP -->
+  <main class="map-container">
+    <div id="map"></div>
+
+    <!-- Loading overlay -->
+    <div class="map-overlay" id="map-overlay">
+      <div class="loading-spinner"></div>
+      <p class="loading-text" id="loading-text">Loading boundaries…</p>
+    </div>
+
+    <!-- Demo warning -->
+    <div class="demo-banner" id="demo-banner" style="display:none">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 3a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 4zm0 8a1 1 0 110-2 1 1 0 010 2z"/></svg>
+      ONS API unavailable — showing synthetic demo data for illustration
+    </div>
+
+    <!-- Map controls -->
+    <div class="map-controls">
+      <button class="map-btn" id="btn-zoom-fit" title="Fit to selection">⊡</button>
+      <button class="map-btn" id="btn-reset" title="Reset view">↺</button>
+    </div>
+  </main>
+
+  <!-- ─────────── RIGHT PANEL: LSOA Detail -->
+  <aside class="sidebar-right" id="sidebar-right">
+    <div class="detail-header">
+      <h3 class="detail-title" id="detail-title">Select an area</h3>
+      <button class="close-btn" id="close-detail">✕</button>
+    </div>
+    <div class="detail-body" id="detail-body">
+      <div class="detail-prompt">
+        <div class="detail-prompt-icon">⊙</div>
+        <p>Click any LSOA on the map to view its full census breakdown</p>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>

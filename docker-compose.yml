@@ -1,0 +1,46 @@
+version: '3.9'
+
+services:
+
+  # ─── FastAPI Census API ───────────────────────────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: census-api
+    restart: unless-stopped
+    volumes:
+      - census-data:/app/data          # Persist downloaded census/boundary data
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - census-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+  # ─── Nginx + Frontend ────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: census-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - census-net
+
+networks:
+  census-net:
+    driver: bridge
+
+volumes:
+  census-data:
+    driver: local

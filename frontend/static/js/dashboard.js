@@ -1,6 +1,6 @@
 /**
- * UK Census 2021 — LSOA Explorer  (v3)
- * National + LAD views, 32 datasets, dual-resolution boundaries
+ * UK Census 2021 — LSOA Explorer v4
+ * National + LAD views · 32 datasets · Selection mode with Shapely dissolve
  */
 
 const API = '/api';
@@ -29,19 +29,26 @@ const state = {
   currentDataset: 'population_density', currentLAD: '',
   datasets: {}, currentValues: {}, currentStats: {},
   currentColorScheme: 'YlOrRd', quantileBreaks: [],
-  selectedLSOA: null, geojsonData: null,
-  boundariesReady: false,
+  selectedLSOA: null, geojsonData: null, boundariesReady: false,
+  // Selection mode state
+  selectMode: false,
+  selectedLSOAs: new Set(),
+  dissolvedLayer: null,      // Leaflet layer for dissolved boundary
+  dissolveResult: null,      // last dissolve API response
+  adjacency: null,           // adjacency graph
 };
 
 // ═══════ Init ═══════
 
 document.addEventListener('DOMContentLoaded', async () => {
   initMap();
+  initSelectionUI();
   await loadDatasets();
   await loadLADList();
-  // Check if national BSC boundaries are ready, then load
   await waitForBoundaries();
   await loadData();
+  // Load adjacency graph in background
+  loadAdjacency();
 });
 
 function initMap() {
@@ -52,6 +59,14 @@ function initMap() {
   document.getElementById('btn-zoom-fit').addEventListener('click', fitToBounds);
   document.getElementById('btn-reset').addEventListener('click', () => state.map.setView([52.5, -1.5], 7));
   document.getElementById('close-detail').addEventListener('click', closeDetail);
+}
+
+function initSelectionUI() {
+  document.getElementById('btn-select-mode').addEventListener('click', toggleSelectMode);
+  document.getElementById('btn-clear-selection').addEventListener('click', clearSelection);
+  document.getElementById('btn-dissolve').addEventListener('click', dissolveSelection);
+  document.getElementById('btn-stats').addEventListener('click', loadSelectionStats);
+  document.getElementById('btn-export').addEventListener('click', exportSelection);
 }
 
 async function waitForBoundaries() {
@@ -65,7 +80,17 @@ async function waitForBoundaries() {
     await new Promise(r => setTimeout(r, 1000));
     setOverlay(true, `Loading national LSOA boundaries… (${i+1}s)`);
   }
-  setOverlay(true, 'Boundaries taking longer than expected. Try refreshing.');
+}
+
+async function loadAdjacency() {
+  try {
+    const res = await fetch(`${API}/adjacency`);
+    if (res.ok) {
+      const data = await res.json();
+      state.adjacency = data.graph;
+      console.log(`Adjacency graph loaded: ${data.count} LSOAs`);
+    }
+  } catch (e) { console.warn('Adjacency not yet available'); }
 }
 
 // ═══════ Data Loading ═══════
@@ -98,33 +123,24 @@ async function loadData() {
   const boundaryParam = state.currentLAD
     ? `?lad_code=${state.currentLAD}&resolution=${resolution}`
     : `?resolution=${resolution}`;
-
-  const label = state.currentLAD ? 'Loading LAD data…' : 'Loading national census data…';
-  setOverlay(true, label);
+  setOverlay(true, state.currentLAD ? 'Loading LAD data…' : 'Loading national census data…');
   document.getElementById('demo-banner').style.display = 'none';
-
   try {
     const [valuesRes, boundaryRes] = await Promise.all([
       fetch(`${API}/lsoa/data/${state.currentDataset}${ladParam}`),
       fetch(`${API}/boundaries/lsoa${boundaryParam}`),
     ]);
     const valuesData = await valuesRes.json();
-    const boundaryData = await boundaryRes.json();
-
     state.currentValues = valuesData.values || {};
     state.currentStats = valuesData.stats || {};
-    state.geojsonData = boundaryData;
-
+    state.geojsonData = await boundaryRes.json();
     const dsInfo = findDataset(state.currentDataset);
     if (dsInfo) state.currentColorScheme = dsInfo.color_scheme;
-
     computeQuantileBreaks();
     updateLegend();
     updateStatsGrid();
     renderMap();
-
-    const n = Object.keys(state.currentValues).length;
-    setStatus(`${n.toLocaleString()} LSOAs`, true);
+    setStatus(`${Object.keys(state.currentValues).length.toLocaleString()} LSOAs`, true);
     setOverlay(false);
   } catch (e) {
     console.error('Load error:', e);
@@ -140,18 +156,13 @@ function renderDatasetList(categories) {
   container.innerHTML = '';
   Object.entries(categories).forEach(([cat, items]) => {
     const header = document.createElement('div');
-    header.className = 'dataset-category-header';
-    header.textContent = cat;
+    header.className = 'dataset-category-header'; header.textContent = cat;
     container.appendChild(header);
     items.forEach(item => {
       const el = document.createElement('div');
       el.className = 'dataset-item' + (item.id === state.currentDataset ? ' active' : '');
       el.dataset.id = item.id;
-      el.innerHTML = `
-        <div class="dataset-dot"></div>
-        <span class="dataset-label">${item.label}</span>
-        <span class="dataset-unit">${item.unit}</span>
-      `;
+      el.innerHTML = `<div class="dataset-dot"></div><span class="dataset-label">${item.label}</span><span class="dataset-unit">${item.unit}</span>`;
       el.addEventListener('click', () => onDatasetChange(item.id, item.color_scheme));
       container.appendChild(el);
     });
@@ -160,9 +171,7 @@ function renderDatasetList(categories) {
 
 function renderMap() {
   if (state.geojsonLayer) state.map.removeLayer(state.geojsonLayer);
-  if (!state.geojsonData || !state.geojsonData.features?.length) {
-    showNoDataMessage(); return;
-  }
+  if (!state.geojsonData || !state.geojsonData.features?.length) { showNoDataMessage(); return; }
   state.geojsonLayer = L.geoJSON(state.geojsonData, {
     style: f => styleFeature(f),
     onEachFeature: (f, layer) => {
@@ -178,8 +187,17 @@ function renderMap() {
 
 function styleFeature(feature) {
   const code = feature.properties.LSOA21CD;
+  const isSelected = state.selectedLSOAs.has(code);
   const value = state.currentValues[code];
   const fill = value !== undefined ? getColour(value) : '#2a3044';
+
+  if (isSelected) {
+    // Show the choropleth colour through the selection, but with a bright border
+    return {
+      fillColor: fill, fillOpacity: 0.85,
+      color: '#00ffd5', weight: 2.5, opacity: 1,
+    };
+  }
   const sel = code === state.selectedLSOA;
   return { fillColor: fill, fillOpacity: sel ? 0.95 : 0.75,
            color: sel ? '#ffffff' : '#0f1117', weight: sel ? 1.5 : 0.3, opacity: 1 };
@@ -206,10 +224,8 @@ function updateLegend() {
   const c = COLOUR_SCHEMES[state.currentColorScheme] || COLOUR_SCHEMES.YlOrRd;
   document.getElementById('legend-gradient').style.background = `linear-gradient(to right, ${c.join(', ')})`;
   const s = state.currentStats;
-  const labels = document.getElementById('legend-labels');
-  if (s.min !== undefined) {
-    labels.innerHTML = `<span>${fmt(s.min)}</span><span>${fmt(s.p50)}</span><span>${fmt(s.max)}</span>`;
-  }
+  if (s.min !== undefined)
+    document.getElementById('legend-labels').innerHTML = `<span>${fmt(s.min)}</span><span>${fmt(s.p50)}</span><span>${fmt(s.max)}</span>`;
 }
 
 function updateStatsGrid() {
@@ -230,25 +246,268 @@ function onFeatureHover(e, feature) {
   const name = feature.properties.LSOA21NM || code;
   const value = state.currentValues[code];
   const dsInfo = findDataset(state.currentDataset);
-  layer.setStyle({ weight: 1.5, color: '#ffffff', fillOpacity: 0.9 });
+  const isInSelection = state.selectedLSOAs.has(code);
+
+  if (!isInSelection) {
+    layer.setStyle({ weight: 1.5, color: '#ffffff', fillOpacity: 0.9 });
+  } else {
+    layer.setStyle({ weight: 3, color: '#00ffd5', fillOpacity: 0.6 });
+  }
   layer.bringToFront();
   if (hoverPopup) state.map.closePopup(hoverPopup);
+  const selLabel = state.selectMode ? `<div style="font-size:10px;color:#00d2be;margin-top:6px">${isInSelection ? '⊖ Click to deselect' : '⊕ Click to select'}</div>` : '';
   hoverPopup = L.popup({ closeButton: false, offset: [0, -4] })
     .setLatLng(e.latlng)
-    .setContent(`<div class="lsoa-popup"><div class="lsoa-popup-name">${name}</div><div class="lsoa-popup-code">${code}</div><div class="lsoa-popup-value">${value !== undefined ? fmt(value) : 'No data'}</div><div class="lsoa-popup-unit">${dsInfo?.unit||''}</div></div>`)
+    .setContent(`<div class="lsoa-popup"><div class="lsoa-popup-name">${name}</div><div class="lsoa-popup-code">${code}</div><div class="lsoa-popup-value">${value !== undefined ? fmt(value) : 'No data'}</div><div class="lsoa-popup-unit">${dsInfo?.unit||''}</div>${selLabel}</div>`)
     .openOn(state.map);
 }
+
 function onFeatureOut(e) {
-  if (state.selectedLSOA === e.target.feature?.properties?.LSOA21CD) return;
+  const code = e.target.feature?.properties?.LSOA21CD;
+  if (state.selectedLSOA === code) return;
   e.target.setStyle(styleFeature(e.target.feature));
   if (hoverPopup) { state.map.closePopup(hoverPopup); hoverPopup = null; }
 }
+
 function onFeatureClick(e, feature) {
-  state.selectedLSOA = feature.properties.LSOA21CD;
-  if (state.geojsonLayer) state.geojsonLayer.resetStyle();
-  openDetail(feature.properties.LSOA21CD, feature.properties.LSOA21NM || feature.properties.LSOA21CD,
-    state.currentValues[feature.properties.LSOA21CD], findDataset(state.currentDataset));
+  const code = feature.properties.LSOA21CD;
   if (hoverPopup) { state.map.closePopup(hoverPopup); hoverPopup = null; }
+
+  if (state.selectMode) {
+    // Toggle LSOA in/out of selection
+    if (state.selectedLSOAs.has(code)) {
+      state.selectedLSOAs.delete(code);
+    } else {
+      state.selectedLSOAs.add(code);
+    }
+    // Invalidate previous dissolve since selection changed
+    state.dissolveResult = null;
+    if (state.dissolvedLayer) {
+      state.map.removeLayer(state.dissolvedLayer);
+      state.dissolvedLayer = null;
+    }
+    updateSelectionUI();
+    // Explicitly restyle all features (resetStyle unreliable on canvas)
+    if (state.geojsonLayer) {
+      state.geojsonLayer.eachLayer(layer => {
+        layer.setStyle(styleFeature(layer.feature));
+      });
+    }
+    return;
+  }
+
+  // Normal mode — open detail panel
+  state.selectedLSOA = code;
+  if (state.geojsonLayer) {
+    state.geojsonLayer.eachLayer(layer => {
+      layer.setStyle(styleFeature(layer.feature));
+    });
+  }
+  openDetail(code, feature.properties.LSOA21NM || code,
+    state.currentValues[code], findDataset(state.currentDataset));
+}
+
+// ═══════ Selection Mode ═══════
+
+function toggleSelectMode() {
+  state.selectMode = !state.selectMode;
+  updateSelectionUI();
+  if (!state.selectMode && state.selectedLSOAs.size === 0) closeDetail();
+}
+
+function updateSelectionUI() {
+  const bar = document.getElementById('select-count-bar');
+  const count = state.selectedLSOAs.size;
+  document.getElementById('select-count').textContent = count;
+  // Show count bar whenever there is a selection, regardless of selectMode
+  bar.classList.toggle('visible', count > 0);
+  // Sync select mode button state
+  const btn = document.getElementById('btn-select-mode');
+  if (btn) {
+    btn.classList.toggle('active', state.selectMode);
+    btn.innerHTML = state.selectMode
+      ? '<div class="select-toggle-icon"></div>Selection ON — click LSOAs to add/remove'
+      : '<div class="select-toggle-icon"></div>Paint selection mode';
+  }
+  const mapEl = document.getElementById('map');
+  if (mapEl) mapEl.style.cursor = state.selectMode ? 'crosshair' : '';
+}
+
+function clearSelection() {
+  state.selectedLSOAs.clear();
+  state.dissolveResult = null;
+  if (state.dissolvedLayer) {
+    state.map.removeLayer(state.dissolvedLayer);
+    state.dissolvedLayer = null;
+  }
+  updateSelectionUI();
+  if (state.geojsonLayer) {
+    state.geojsonLayer.eachLayer(layer => layer.setStyle(styleFeature(layer.feature)));
+  }
+  closeDetail();
+}
+
+async function dissolveSelection() {
+  if (state.selectedLSOAs.size === 0) return;
+  setOverlay(true, `Dissolving ${state.selectedLSOAs.size} LSOAs…`);
+
+  try {
+    const res = await fetch(`${API}/selection/dissolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lsoa_codes: [...state.selectedLSOAs] }),
+    });
+    const result = await res.json();
+    state.dissolveResult = result;
+
+    // Remove old dissolved layer
+    if (state.dissolvedLayer) {
+      state.map.removeLayer(state.dissolvedLayer);
+    }
+
+    // Add dissolved boundary to map
+    state.dissolvedLayer = L.geoJSON(result, {
+      style: {
+        fillColor: 'transparent',
+        color: '#00ffd5',
+        weight: 3,
+        opacity: 1,
+        dashArray: '8,4',
+      },
+    }).addTo(state.map);
+
+    // Open right panel with dissolve results
+    showDissolvePanel(result);
+    setOverlay(false);
+  } catch (e) {
+    console.error('Dissolve error:', e);
+    setOverlay(false);
+  }
+}
+
+function showDissolvePanel(result) {
+  const panel = document.getElementById('sidebar-right');
+  panel.classList.add('open');
+  document.getElementById('detail-title').textContent = 'Selection Boundary';
+
+  const body = document.getElementById('detail-body');
+  const props = result.properties || {};
+  const contiguous = props.contiguous;
+  const badge = contiguous
+    ? '<span class="contiguity-badge connected">Connected</span>'
+    : `<span class="contiguity-badge disconnected">${props.components} components</span>`;
+
+  body.innerHTML = `
+    <div class="selection-summary">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:12px;font-weight:600;color:var(--text-primary)">${props.lsoa_count} LSOAs</span>
+        ${badge}
+      </div>
+      <div class="selection-stat-grid">
+        <div class="selection-stat">
+          <div class="selection-stat-label">Area</div>
+          <div class="selection-stat-value">${props.area_km2?.toFixed(2) || '—'} km²</div>
+        </div>
+        <div class="selection-stat">
+          <div class="selection-stat-label">Perimeter</div>
+          <div class="selection-stat-value">${props.perimeter_km?.toFixed(2) || '—'} km</div>
+        </div>
+        <div class="selection-stat">
+          <div class="selection-stat-label">Centroid</div>
+          <div class="selection-stat-value" style="font-size:10px">${props.centroid ? props.centroid[1].toFixed(4)+', '+props.centroid[0].toFixed(4) : '—'}</div>
+        </div>
+        <div class="selection-stat">
+          <div class="selection-stat-label">Neighbours</div>
+          <div class="selection-stat-value">${props.border_neighbours?.length || 0}</div>
+        </div>
+      </div>
+      ${props.missing_codes?.length ? `<div style="font-size:10px;color:var(--accent-warn);margin-top:8px">${props.missing_codes.length} codes not found in geometry index</div>` : ''}
+    </div>
+    <div style="padding:12px 14px">
+      <button class="selection-export-btn" onclick="exportSelection()">⬇ Export dissolved GeoJSON</button>
+      <button class="selection-export-btn" style="margin-top:6px" onclick="loadSelectionStats()">📊 Load aggregate statistics</button>
+    </div>
+    <div id="selection-stats-container"></div>
+    <div class="detail-source">Boundary computed via Shapely unary_union</div>
+  `;
+}
+
+async function loadSelectionStats() {
+  if (state.selectedLSOAs.size === 0) return;
+  // Ensure the dissolve panel is open
+  if (!state.dissolveResult) {
+    await dissolveSelection();
+  } else {
+    // Re-show the panel if it was closed
+    showDissolvePanel(state.dissolveResult);
+  }
+  const container = document.getElementById('selection-stats-container');
+  if (!container) return;
+  container.innerHTML = '<div class="detail-loading"><div class="loading-spinner"></div>Aggregating…</div>';
+
+  try {
+    const res = await fetch(`${API}/selection/aggregate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lsoa_codes: [...state.selectedLSOAs] }),
+    });
+    const data = await res.json();
+    renderSelectionStats(container, data);
+  } catch (e) {
+    container.innerHTML = '<p style="padding:14px;color:var(--text-muted);font-size:11px">Failed to load stats</p>';
+  }
+}
+
+function renderSelectionStats(container, data) {
+  let html = '<div style="padding:0 14px 14px">';
+  html += `<div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-muted);margin-bottom:8px;padding-top:8px;border-top:1px solid var(--border-subtle)">Aggregate Statistics (${data.selection_size} LSOAs)</div>`;
+
+  // Group by category from datasets
+  const byCategory = {};
+  for (const [dsId, info] of Object.entries(data.datasets || {})) {
+    const dsDef = findDataset(dsId);
+    const cat = dsDef ? (state.datasets.categories ? Object.entries(state.datasets.categories).find(([,items]) => items.some(i => i.id === dsId))?.[0] : 'Other') : 'Other';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push({ id: dsId, ...info });
+  }
+
+  for (const [cat, items] of Object.entries(byCategory)) {
+    html += `<div style="font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin:10px 0 4px">${cat || 'Other'}</div>`;
+    for (const item of items) {
+      const val = item.value != null ? fmt(item.value) : '—';
+      html += `<div class="selection-dataset-row"><span class="selection-dataset-label">${item.label}</span><span class="selection-dataset-value">${val} <span style="font-size:9px;color:var(--text-muted)">${item.unit}</span></span></div>`;
+    }
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function exportSelection() {
+  if (!state.dissolveResult) {
+    dissolveSelection().then(() => {
+      if (state.dissolveResult) doExport();
+    });
+    return;
+  }
+  doExport();
+}
+
+function doExport() {
+  const data = {
+    ...state.dissolveResult,
+    properties: {
+      ...state.dissolveResult.properties,
+      selected_lsoa_codes: [...state.selectedLSOAs],
+      export_timestamp: new Date().toISOString(),
+    },
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/geo+json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `census_selection_${state.selectedLSOAs.size}_lsoas.geojson`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ═══════ Detail Panel ═══════
@@ -260,8 +519,7 @@ async function openDetail(code, name, value, dsInfo) {
   body.innerHTML = '<div class="detail-loading"><div class="loading-spinner"></div>Loading data…</div>';
   try {
     const res = await fetch(`${API}/lsoa/detail/${code}`);
-    const detail = await res.json();
-    renderDetailPanel(detail, value, dsInfo);
+    renderDetailPanel(await res.json(), value, dsInfo);
   } catch (e) { body.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:12px;">Could not load detail data.</p>'; }
 }
 
@@ -286,7 +544,9 @@ function renderDetailPanel(detail, mapValue, dsInfo) {
 function closeDetail() {
   document.getElementById('sidebar-right').classList.remove('open');
   state.selectedLSOA = null;
-  if (state.geojsonLayer) state.geojsonLayer.resetStyle();
+  if (state.geojsonLayer) {
+    state.geojsonLayer.eachLayer(layer => layer.setStyle(styleFeature(layer.feature)));
+  }
 }
 window.toggleCategory = function(el) {
   el.classList.toggle('collapsed');
@@ -300,7 +560,8 @@ async function onDatasetChange(datasetId, colorScheme) {
   state.currentDataset = datasetId;
   state.currentColorScheme = colorScheme;
   state.selectedLSOA = null;
-  closeDetail();
+  // Only close detail panel if there's no active selection
+  if (state.selectedLSOAs.size === 0) closeDetail();
   document.querySelectorAll('.dataset-item').forEach(el => el.classList.toggle('active', el.dataset.id === datasetId));
   setOverlay(true, 'Loading dataset…');
   try {
@@ -312,7 +573,11 @@ async function onDatasetChange(datasetId, colorScheme) {
     computeQuantileBreaks();
     updateLegend();
     updateStatsGrid();
-    if (state.geojsonLayer) state.geojsonLayer.setStyle(f => styleFeature(f));
+    if (state.geojsonLayer) {
+      state.geojsonLayer.eachLayer(layer => layer.setStyle(styleFeature(layer.feature)));
+    }
+    // Re-assert selection UI in case it was lost
+    updateSelectionUI();
     setStatus(`${Object.keys(state.currentValues).length.toLocaleString()} LSOAs`, true);
   } catch (e) { setStatus('Error', false); }
   setOverlay(false);
@@ -322,6 +587,7 @@ async function onLADChange(e) {
   state.currentLAD = e.target.value;
   state.selectedLSOA = null;
   closeDetail();
+  clearSelection();
   await loadData();
 }
 
@@ -364,5 +630,5 @@ function fmtInt(v) { return v == null ? '—' : Math.round(v).toLocaleString('en
 function showNoDataMessage() {
   const o = document.getElementById('map-overlay');
   o.classList.remove('hidden');
-  o.innerHTML = '<div style="text-align:center;padding:20px;max-width:380px"><div style="font-size:32px;margin-bottom:12px;opacity:0.4">⊙</div><p style="color:var(--text-primary);font-weight:600;margin-bottom:8px">No boundaries loaded</p><p style="color:var(--text-secondary);font-size:12px;line-height:1.6">The boundary service did not return LSOA shapes. Try refreshing or selecting a different area.</p></div>';
+  o.innerHTML = '<div style="text-align:center;padding:20px;max-width:380px"><div style="font-size:32px;margin-bottom:12px;opacity:0.4">⊙</div><p style="color:var(--text-primary);font-weight:600;margin-bottom:8px">No boundaries loaded</p><p style="color:var(--text-secondary);font-size:12px;line-height:1.6">Boundary data not yet loaded. Try refreshing.</p></div>';
 }

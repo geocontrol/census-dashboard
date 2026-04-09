@@ -22,6 +22,7 @@ from scotland import (
     download_scotland_census_csvs,
     process_all_scotland_indicators,
     process_scotland_indicator,
+    compute_scotland_population_data,
     SCOTLAND_INDICATOR_MAP,
     SCOTTISH_COUNCIL_AREAS,
 )
@@ -237,10 +238,20 @@ async def startup_prefetch():
 async def _prefetch_scotland_census_data():
     """Background task to download and process Scotland census data."""
     try:
+        # Compute population density/total from boundary shapefile attributes
+        dz22_file = DATA_DIR / "boundaries_scotland_dz22.geojson"
+        if dz22_file.exists():
+            pop_data = compute_scotland_population_data(dz22_file, scotland_dz_names)
+            for ds_id, data in pop_data.items():
+                cache_file = DATA_DIR / f"data_{ds_id}_national_sc.json"
+                cache_file.write_text(json.dumps(data))
+                scotland_data_cache[ds_id] = data
+                logger.info(f"  Scotland {ds_id}: {len(data['values'])} DZs (from boundary data)")
+
         await download_scotland_census_csvs(DATA_DIR)
         results = await process_all_scotland_indicators(DATA_DIR, scotland_oa_to_dz, scotland_dz_names)
         scotland_data_cache.update(results)
-        logger.info(f"Scotland census data processed: {len(results)} indicators")
+        logger.info(f"Scotland census data processed: {len(scotland_data_cache)} indicators total")
     except Exception as e:
         logger.error(f"Scotland census data processing failed: {e}")
 
@@ -490,7 +501,17 @@ def _get_scotland_data(dataset_id: str) -> Optional[dict]:
         data = json.loads(cache_file.read_text())
         scotland_data_cache[dataset_id] = data
         return data
-    # Try processing on demand
+    # Try computing population data from boundary attributes
+    if dataset_id in ("population_density", "population_total"):
+        dz22_file = DATA_DIR / "boundaries_scotland_dz22.geojson"
+        if dz22_file.exists():
+            pop_data = compute_scotland_population_data(dz22_file, scotland_dz_names)
+            if dataset_id in pop_data:
+                result = pop_data[dataset_id]
+                cache_file.write_text(json.dumps(result))
+                scotland_data_cache[dataset_id] = result
+                return result
+    # Try processing from CSV on demand
     if dataset_id in SCOTLAND_INDICATOR_MAP and scotland_oa_to_dz:
         csv_dir = DATA_DIR / "scotland_oa_csvs"
         if csv_dir.exists():

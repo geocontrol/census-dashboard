@@ -138,12 +138,23 @@ async def download_dz22_boundaries(data_dir: Path) -> Path:
         if not simplified.is_valid:
             simplified = simplified.buffer(0)
 
+        # Preserve population/area fields from shapefile for density calculation
+        totpop = rec.get("totpop2022", 0)
+        areakm2 = rec.get("stdareakm2", 0)
+        try:
+            totpop = float(totpop)
+            areakm2 = float(areakm2)
+        except (ValueError, TypeError):
+            totpop, areakm2 = 0, 0
+
         feature = {
             "type": "Feature",
             "properties": {
                 "DZ22CD": dz_code,
                 "DZ22NM": dz_name,
                 "nation": "SC",
+                "totpop2022": totpop,
+                "stdareakm2": areakm2,
             },
             "geometry": mapping(simplified),
         }
@@ -718,6 +729,56 @@ async def process_all_scotland_indicators(
             logger.warning(f"  Scotland {dataset_id}: no data extracted")
 
     return results
+
+
+def compute_scotland_population_data(dz22_geojson_path: Path, dz_names: dict[str, str]) -> dict[str, dict]:
+    """Compute population_density and population_total from DZ22 boundary properties."""
+    geojson = json.loads(dz22_geojson_path.read_text())
+
+    density_values = {}
+    total_values = {}
+    names = {}
+
+    for feat in geojson.get("features", []):
+        props = feat["properties"]
+        code = props.get("DZ22CD", "")
+        if not code:
+            continue
+        pop = props.get("totpop2022", 0)
+        area = props.get("stdareakm2", 0)
+        names[code] = dz_names.get(code, props.get("DZ22NM", code))
+        total_values[code] = round(pop, 2)
+        density_values[code] = round(pop / area, 2) if area > 0 else 0.0
+
+    def _stats(vals):
+        sv = sorted(vals.values())
+        n = len(sv)
+        if n == 0:
+            return {}
+        return {
+            "min": sv[0], "max": sv[-1],
+            "mean": round(sum(sv) / n, 2),
+            "p10": sv[int(n * 0.1)], "p25": sv[int(n * 0.25)],
+            "p50": sv[int(n * 0.5)], "p75": sv[int(n * 0.75)],
+            "p90": sv[int(n * 0.9)], "count": n,
+        }
+
+    return {
+        "population_density": {
+            "dataset_id": "population_density",
+            "values": density_values,
+            "names": names,
+            "stats": _stats(density_values),
+            "source": "Scotland's Census 2022 — NRS (from DZ22 boundary data)",
+        },
+        "population_total": {
+            "dataset_id": "population_total",
+            "values": total_values,
+            "names": names,
+            "stats": _stats(total_values),
+            "source": "Scotland's Census 2022 — NRS (from DZ22 boundary data)",
+        },
+    }
 
 
 # ═══════ Scottish Council Areas ═══════

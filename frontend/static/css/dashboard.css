@@ -233,6 +233,25 @@ a:hover { text-decoration: underline; }
   font-size: 10px;
   color: var(--text-muted);
 }
+.dataset-coverage {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: auto;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+.dataset-coverage.uk {
+  background: rgba(0, 210, 190, 0.15);
+  color: #00d2be;
+}
+.dataset-coverage.ew {
+  background: rgba(139, 151, 181, 0.12);
+  color: #6b7394;
+}
 
 /* ── Legend ──────────────────────────────── */
 .legend-container { margin-bottom: 10px; }

@@ -440,12 +440,18 @@ async def _fetch_all_boundaries(service_url, label):
 
 @app.get("/api/datasets")
 async def get_datasets():
+    # Datasets with Scotland coverage: mapped indicators + population from boundary data
+    sc_ids = set(SCOTLAND_INDICATOR_MAP.keys()) | {"population_density", "population_total"}
     categories = {}
     for key, ds in CENSUS_DATASETS.items():
         cat = ds["category"]
         if cat not in categories:
             categories[cat] = []
-        categories[cat].append({"id": key, "label": ds["label"], "description": ds["description"], "unit": ds["unit"], "color_scheme": ds["color_scheme"]})
+        categories[cat].append({
+            "id": key, "label": ds["label"], "description": ds["description"],
+            "unit": ds["unit"], "color_scheme": ds["color_scheme"],
+            "coverage": "uk" if key in sc_ids else "ew",
+        })
     return {"categories": categories, "total": len(CENSUS_DATASETS)}
 
 @app.get("/api/lsoa/data/{dataset_id}")

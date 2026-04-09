@@ -178,7 +178,10 @@ function renderDatasetList(categories) {
       const el = document.createElement('div');
       el.className = 'dataset-item' + (item.id === state.currentDataset ? ' active' : '');
       el.dataset.id = item.id;
-      el.innerHTML = `<div class="dataset-dot"></div><span class="dataset-label">${item.label}</span><span class="dataset-unit">${item.unit}</span>`;
+      const coverageBadge = item.coverage === 'uk'
+        ? '<span class="dataset-coverage uk" title="England, Wales &amp; Scotland">UK</span>'
+        : '<span class="dataset-coverage ew" title="England &amp; Wales only">E&amp;W</span>';
+      el.innerHTML = `<div class="dataset-dot"></div><span class="dataset-label">${item.label}</span>${coverageBadge}<span class="dataset-unit">${item.unit}</span>`;
       el.addEventListener('click', () => onDatasetChange(item.id, item.color_scheme));
       container.appendChild(el);
     });

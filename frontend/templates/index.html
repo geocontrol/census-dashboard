@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>UK Census 2021 — LSOA Explorer</title>
+  <title>UK Census Explorer — LSOA &amp; Data Zone</title>
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -29,8 +29,8 @@
     <span class="brand-name">Census<em>Explorer</em></span>
   </div>
   <div class="header-meta">
-    <span class="badge">2021 England &amp; Wales</span>
-    <span class="badge badge-lsoa">LSOA Level</span>
+    <span class="badge">2021/22 Census</span>
+    <span class="badge badge-lsoa">LSOA &amp; Data Zone</span>
     <span id="status-badge" class="badge badge-status">Loading…</span>
   </div>
 </header>
@@ -45,7 +45,7 @@
       <div class="field-group">
         <label class="field-label">Local Authority</label>
         <select id="lad-select" class="select-control">
-          <option value="">All England &amp; Wales</option>
+          <option value="">All UK (England, Wales &amp; Scotland)</option>
         </select>
       </div>
     </div>
@@ -75,8 +75,8 @@
     </div>
 
     <div class="sidebar-section sidebar-footer">
-      <p class="footer-text">Data: <a href="https://www.ons.gov.uk/census" target="_blank">ONS Census 2021</a></p>
-      <p class="footer-text">Boundaries: <a href="https://geoportal.statistics.gov.uk" target="_blank">ONS Open Geography Portal</a></p>
+      <p class="footer-text">Data: <a href="https://www.ons.gov.uk/census" target="_blank">ONS Census 2021</a> · <a href="https://www.scotlandscensus.gov.uk" target="_blank">Scotland Census 2022</a></p>
+      <p class="footer-text">Boundaries: <a href="https://geoportal.statistics.gov.uk" target="_blank">ONS</a> · <a href="https://maps.gov.scot" target="_blank">Scottish Government</a></p>
     </div>
   </aside>
 
@@ -84,7 +84,7 @@
   <main class="map-container">
     <!-- Selection count bar -->
     <div class="select-count-bar" id="select-count-bar">
-      <span><span class="count" id="select-count">0</span> LSOAs selected</span>
+      <span><span class="count" id="select-count">0</span> areas selected</span>
       <div class="select-actions">
         <button class="select-action-btn" id="btn-dissolve" title="Compute boundary">Dissolve</button>
         <button class="select-action-btn" id="btn-stats" title="Aggregate stats">Stats</button>
@@ -122,7 +122,7 @@
     <div class="detail-body" id="detail-body">
       <div class="detail-prompt">
         <div class="detail-prompt-icon">⊙</div>
-        <p>Click any LSOA on the map to view its full census breakdown</p>
+        <p>Click any area on the map to view its census breakdown</p>
       </div>
     </div>
   </aside>

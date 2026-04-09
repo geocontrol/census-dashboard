@@ -1,6 +1,6 @@
 """
-UK Census 2021 — LSOA Explorer API  (v3)
-National-scale LSOA data via Nomis + pre-fetched BSC/BGC boundaries
+UK Census Explorer API  (v4)
+National-scale LSOA (E&W) + Data Zone (Scotland) data
 """
 import csv, io, json, asyncio, logging
 from pathlib import Path
@@ -16,20 +16,35 @@ from shapely.geometry import shape, mapping
 from shapely.ops import unary_union
 from shapely import buffer as shp_buffer
 
+from scotland import (
+    download_dz22_boundaries,
+    download_oa_dz_lookup,
+    download_scotland_census_csvs,
+    process_all_scotland_indicators,
+    process_scotland_indicator,
+    SCOTLAND_INDICATOR_MAP,
+    SCOTTISH_COUNCIL_AREAS,
+)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="UK Census LSOA Explorer API", version="3.0.0")
+app = FastAPI(title="UK Census Explorer API", version="4.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 data_cache = TTLCache(maxsize=500, ttl=86400)
 DATA_DIR = Path("/app/data")
 DATA_DIR.mkdir(exist_ok=True)
 
-# In-memory adjacency graph: {lsoa_code: [neighbour_codes]}
+# In-memory adjacency graph: {area_code: [neighbour_codes]}
 adjacency_graph: dict = {}
-# In-memory geometry index: {lsoa_code: shapely.Geometry}
+# In-memory geometry index: {area_code: shapely.Geometry}
 lsoa_geometries: dict = {}
+
+# Scotland state
+scotland_oa_to_dz: dict = {}
+scotland_dz_names: dict = {}
+scotland_data_cache: dict = {}  # {dataset_id: {values, names, stats}}
 
 class SelectionRequest(BaseModel):
     lsoa_codes: List[str]
@@ -201,6 +216,34 @@ async def startup_prefetch():
     # Build adjacency graph and geometry index
     await _build_adjacency_graph(bsc_file)
 
+    # ── Scotland DZ22 boundaries ──
+    try:
+        dz22_file = await download_dz22_boundaries(DATA_DIR)
+        await _build_scotland_geometry_index(dz22_file)
+        await _build_scotland_adjacency(dz22_file)
+    except Exception as e:
+        logger.error(f"Scotland boundary setup failed: {e}")
+
+    # ── Scotland OA→DZ lookup and census data ──
+    try:
+        global scotland_oa_to_dz, scotland_dz_names
+        scotland_oa_to_dz, scotland_dz_names = await download_oa_dz_lookup(DATA_DIR)
+        # Download census CSVs (non-blocking for startup speed — data processed on demand)
+        asyncio.create_task(_prefetch_scotland_census_data())
+    except Exception as e:
+        logger.error(f"Scotland lookup/census setup failed: {e}")
+
+
+async def _prefetch_scotland_census_data():
+    """Background task to download and process Scotland census data."""
+    try:
+        await download_scotland_census_csvs(DATA_DIR)
+        results = await process_all_scotland_indicators(DATA_DIR, scotland_oa_to_dz, scotland_dz_names)
+        scotland_data_cache.update(results)
+        logger.info(f"Scotland census data processed: {len(results)} indicators")
+    except Exception as e:
+        logger.error(f"Scotland census data processing failed: {e}")
+
 async def _build_adjacency_graph(bsc_file: Path):
     """Build LSOA adjacency graph from cached BSC boundaries using Shapely."""
     adj_file = DATA_DIR / "adjacency_graph.json"
@@ -290,6 +333,78 @@ async def _build_geometry_index(bsc_file: Path):
                 continue
     logger.info(f"Geometry index loaded: {len(lsoa_geometries)} LSOAs")
 
+async def _build_scotland_geometry_index(dz22_file: Path):
+    """Load Scotland DZ22 geometries into the shared geometry index."""
+    async with aiofiles.open(dz22_file) as f:
+        geojson = json.loads(await f.read())
+    count = 0
+    for feat in geojson.get("features", []):
+        code = feat["properties"].get("DZ22CD", "")
+        if code:
+            try:
+                geom = shape(feat["geometry"])
+                if not geom.is_valid:
+                    geom = geom.buffer(0)
+                lsoa_geometries[code] = geom
+                count += 1
+            except Exception:
+                continue
+    logger.info(f"Scotland geometry index loaded: {count} DZs (total geometries: {len(lsoa_geometries)})")
+
+async def _build_scotland_adjacency(dz22_file: Path):
+    """Build adjacency graph for Scotland DZ22 features and merge into main graph."""
+    adj_file = DATA_DIR / "adjacency_graph_scotland.json"
+    if adj_file.exists():
+        async with aiofiles.open(adj_file) as f:
+            sc_adj = json.loads(await f.read())
+        adjacency_graph.update(sc_adj)
+        logger.info(f"Scotland adjacency graph loaded from cache: {len(sc_adj)} DZs")
+        return
+
+    logger.info("Building Scotland DZ22 adjacency graph...")
+    async with aiofiles.open(dz22_file) as f:
+        geojson = json.loads(await f.read())
+
+    geoms = {}
+    for feat in geojson.get("features", []):
+        code = feat["properties"].get("DZ22CD", "")
+        if not code:
+            continue
+        try:
+            geom = shape(feat["geometry"])
+            if not geom.is_valid:
+                geom = geom.buffer(0)
+            geoms[code] = geom
+        except Exception:
+            continue
+
+    from shapely import STRtree
+    codes = list(geoms.keys())
+    polys = [geoms[c] for c in codes]
+    tree = STRtree(polys)
+
+    adj = {c: [] for c in codes}
+    for i, code in enumerate(codes):
+        geom = polys[i]
+        for j in tree.query(geom):
+            if j == i:
+                continue
+            other_code = codes[j]
+            try:
+                intersection = geom.intersection(polys[j])
+                if not intersection.is_empty and intersection.geom_type in (
+                    "LineString", "MultiLineString", "GeometryCollection", "Polygon", "MultiPolygon"
+                ):
+                    adj[code].append(other_code)
+            except Exception:
+                continue
+
+    adjacency_graph.update(adj)
+    async with aiofiles.open(adj_file, "w") as f:
+        await f.write(json.dumps(adj))
+    total_edges = sum(len(v) for v in adj.values()) // 2
+    logger.info(f"Scotland adjacency graph built: {len(adj)} DZs, {total_edges} edges")
+
 async def _fetch_all_boundaries(service_url, label):
     all_features = []
     offset = 0
@@ -326,36 +441,119 @@ async def get_datasets():
 async def get_lsoa_data(dataset_id: str, lad_code: Optional[str] = Query(None)):
     if dataset_id not in CENSUS_DATASETS:
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found")
+
+    # Scottish council area: return Scotland-only data
+    if lad_code and lad_code.startswith("S12"):
+        sc_data = _get_scotland_data(dataset_id)
+        if sc_data:
+            return sc_data
+        return {"dataset_id": dataset_id, "values": {}, "names": {}, "stats": {}, "source": "No Scotland data"}
+
     scope = lad_code or "national"
     cache_key = f"data:{dataset_id}:{scope}"
     if cache_key in data_cache:
-        return data_cache[cache_key]
-    cache_file = DATA_DIR / f"data_{dataset_id}_{scope}.json"
+        ew_result = data_cache[cache_key]
+    else:
+        cache_file = DATA_DIR / f"data_{dataset_id}_{scope}.json"
+        if cache_file.exists():
+            async with aiofiles.open(cache_file) as f:
+                ew_result = json.loads(await f.read())
+        else:
+            ds = CENSUS_DATASETS[dataset_id]
+            ew_result = await fetch_nomis_data(dataset_id, ds, lad_code)
+            async with aiofiles.open(cache_file, "w") as f:
+                await f.write(json.dumps(ew_result))
+        data_cache[cache_key] = ew_result
+
+    # For national view, merge Scotland data if available
+    if not lad_code:
+        sc_data = _get_scotland_data(dataset_id)
+        if sc_data and sc_data.get("values"):
+            merged = {**ew_result}
+            merged["values"] = {**ew_result.get("values", {}), **sc_data["values"]}
+            merged["names"] = {**ew_result.get("names", {}), **sc_data["names"]}
+            # Recompute stats across merged dataset
+            all_vals = list(merged["values"].values())
+            merged["stats"] = compute_stats(all_vals) if all_vals else {}
+            merged["source"] = "ONS Census 2021 (E&W) + Scotland's Census 2022"
+            return merged
+
+    return ew_result
+
+
+def _get_scotland_data(dataset_id: str) -> Optional[dict]:
+    """Get Scotland data for a dataset, from cache or disk."""
+    if dataset_id in scotland_data_cache:
+        return scotland_data_cache[dataset_id]
+    cache_file = DATA_DIR / f"data_{dataset_id}_national_sc.json"
     if cache_file.exists():
-        async with aiofiles.open(cache_file) as f:
-            result = json.loads(await f.read())
-        data_cache[cache_key] = result
-        return result
-    ds = CENSUS_DATASETS[dataset_id]
-    result = await fetch_nomis_data(dataset_id, ds, lad_code)
-    async with aiofiles.open(cache_file, "w") as f:
-        await f.write(json.dumps(result))
-    data_cache[cache_key] = result
-    return result
+        data = json.loads(cache_file.read_text())
+        scotland_data_cache[dataset_id] = data
+        return data
+    # Try processing on demand
+    if dataset_id in SCOTLAND_INDICATOR_MAP and scotland_oa_to_dz:
+        csv_dir = DATA_DIR / "scotland_oa_csvs"
+        if csv_dir.exists():
+            result = process_scotland_indicator(dataset_id, csv_dir, scotland_oa_to_dz, scotland_dz_names)
+            if result:
+                cache_file.write_text(json.dumps(result))
+                scotland_data_cache[dataset_id] = result
+                return result
+    return None
 
 @app.get("/api/boundaries/lsoa")
 async def get_lsoa_boundaries(lad_code: Optional[str] = Query(None), resolution: str = Query("bsc")):
     if not lad_code:
+        # National view: merge E&W BSC + Scotland DZ22
+        ck = "boundaries:national:merged"
+        if ck in data_cache:
+            return data_cache[ck]
+
         bsc_file = DATA_DIR / "boundaries_national_bsc.geojson"
-        if bsc_file.exists():
-            ck = "boundaries:national:bsc"
-            if ck in data_cache:
-                return data_cache[ck]
-            async with aiofiles.open(bsc_file) as f:
+        dz22_file = DATA_DIR / "boundaries_scotland_dz22.geojson"
+
+        if not bsc_file.exists():
+            raise HTTPException(status_code=503, detail="National boundaries not yet loaded")
+
+        async with aiofiles.open(bsc_file) as f:
+            ew_geojson = json.loads(await f.read())
+
+        # Add nation property to E&W features
+        for feat in ew_geojson.get("features", []):
+            feat["properties"]["nation"] = "EW"
+
+        # Merge Scotland DZ22 features if available
+        if dz22_file.exists():
+            async with aiofiles.open(dz22_file) as f:
+                sc_geojson = json.loads(await f.read())
+            ew_geojson["features"].extend(sc_geojson.get("features", []))
+            logger.info(f"Merged boundaries: {len(ew_geojson['features'])} total features")
+
+        data_cache[ck] = ew_geojson
+        return ew_geojson
+
+    # Scottish council area filter
+    if lad_code.startswith("S12"):
+        ck = f"boundaries:{lad_code}:dz22"
+        if ck in data_cache:
+            return data_cache[ck]
+        geo_file = DATA_DIR / f"boundaries_{lad_code}_dz22.geojson"
+        if geo_file.exists():
+            async with aiofiles.open(geo_file) as f:
                 geojson = json.loads(await f.read())
             data_cache[ck] = geojson
             return geojson
-        raise HTTPException(status_code=503, detail="National boundaries not yet loaded")
+        # Filter DZ22 features for this council area
+        # For now, return all Scotland DZs (council area filtering requires spatial lookup)
+        dz22_file = DATA_DIR / "boundaries_scotland_dz22.geojson"
+        if dz22_file.exists():
+            async with aiofiles.open(dz22_file) as f:
+                geojson = json.loads(await f.read())
+            data_cache[ck] = geojson
+            return geojson
+        raise HTTPException(status_code=503, detail="Scotland boundaries not yet loaded")
+
+    # E&W LAD filter
     res = resolution.lower()
     svc = {"bsc": BSC_URL, "bgc": BGC_URL, "bfc": BFC_URL}.get(res, BGC_URL)
     ck = f"boundaries:{lad_code}:{res}"
@@ -384,11 +582,46 @@ async def get_lsoa_detail_ep(lsoa_code: str):
             result = json.loads(await f.read())
         data_cache[ck] = result
         return result
+
+    # Scotland DZ codes start with S01
+    if lsoa_code.startswith("S01"):
+        result = _build_scotland_detail(lsoa_code)
+        async with aiofiles.open(cf, "w") as f:
+            await f.write(json.dumps(result))
+        data_cache[ck] = result
+        return result
+
     result = await fetch_lsoa_detail(lsoa_code)
     async with aiofiles.open(cf, "w") as f:
         await f.write(json.dumps(result))
     data_cache[ck] = result
     return result
+
+
+def _build_scotland_detail(dz_code: str) -> dict:
+    """Build a detail panel response for a Scotland Data Zone from cached indicator data."""
+    name = scotland_dz_names.get(dz_code, dz_code)
+    categories = {}
+
+    # Group Scotland indicators by their E&W category
+    for ds_id, mapping_info in SCOTLAND_INDICATOR_MAP.items():
+        ds = CENSUS_DATASETS.get(ds_id)
+        if not ds:
+            continue
+        sc_data = _get_scotland_data(ds_id)
+        if not sc_data or dz_code not in sc_data.get("values", {}):
+            continue
+        cat_name = ds["category"]
+        if cat_name not in categories:
+            categories[cat_name] = {}
+        categories[cat_name][ds["label"]] = sc_data["values"][dz_code]
+
+    return {
+        "lsoa_code": dz_code,
+        "name": name,
+        "source": "Scotland's Census 2022 — NRS",
+        "categories": categories,
+    }
 
 @app.get("/api/lad/list")
 async def get_lad_list():
@@ -396,12 +629,13 @@ async def get_lad_list():
     if ck in data_cache:
         return data_cache[ck]
     cf = DATA_DIR / "lad_list.json"
+    # Clear old cache to pick up Scotland additions
     if cf.exists():
-        async with aiofiles.open(cf) as f:
-            result = json.loads(await f.read())
-        data_cache[ck] = result
-        return result
+        cf.unlink()
     result = await fetch_lad_list()
+    # Add Scottish council areas
+    result["lads"].extend(SCOTTISH_COUNCIL_AREAS)
+    result["lads"].sort(key=lambda x: x["name"])
     async with aiofiles.open(cf, "w") as f:
         await f.write(json.dumps(result))
     data_cache[ck] = result
@@ -410,7 +644,14 @@ async def get_lad_list():
 @app.get("/api/health")
 async def health():
     bsc = DATA_DIR / "boundaries_national_bsc.geojson"
-    return {"status": "ok", "cached_items": len(data_cache), "boundaries_ready": bsc.exists()}
+    dz22 = DATA_DIR / "boundaries_scotland_dz22.geojson"
+    return {
+        "status": "ok",
+        "cached_items": len(data_cache),
+        "boundaries_ready": bsc.exists(),
+        "scotland_boundaries_ready": dz22.exists(),
+        "scotland_data_indicators": len(scotland_data_cache),
+    }
 
 @app.get("/api/debug/cache")
 async def debug_cache():

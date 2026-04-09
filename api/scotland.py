@@ -102,15 +102,8 @@ async def download_dz22_boundaries(data_dir: Path) -> Path:
     features = []
     for sr in reader.shapeRecords():
         rec = dict(zip(fields, sr.record))
-        dz_code = rec.get("DataZone", rec.get("DZ2022", rec.get("dzcode", "")))
-        dz_name = rec.get("Name", rec.get("DZ2022Name", rec.get("dzname", "")))
-
-        # If field names differ, try to find them
-        if not dz_code:
-            for key, val in rec.items():
-                if isinstance(val, str) and val.startswith("S01"):
-                    dz_code = val
-                    break
+        dz_code = rec.get("dzcode", rec.get("DataZone", rec.get("DZ2022", "")))
+        dz_name = rec.get("dzname", rec.get("Name", rec.get("DZ2022Name", "")))
 
         if not dz_code:
             continue
@@ -623,18 +616,18 @@ def process_scotland_indicator(
     if not mapping_info:
         return None
 
-    csv_stem = mapping_info["csv"]
-    # Find the CSV file (case-insensitive search)
+    csv_stem = mapping_info["csv"].upper()
+    # Find the CSV file — filenames include description, e.g. "MV409 - Tenure (6) by ...csv"
     csv_file = None
     for f in csv_dir.iterdir():
-        if f.stem.upper() == csv_stem.upper() and f.suffix.lower() == ".csv":
+        if f.suffix.lower() == ".csv" and f.name.upper().startswith(csv_stem):
             csv_file = f
             break
 
     # Also check subdirectories
     if not csv_file:
         for f in csv_dir.rglob("*.csv"):
-            if f.stem.upper() == csv_stem.upper():
+            if f.name.upper().startswith(csv_stem):
                 csv_file = f
                 break
 

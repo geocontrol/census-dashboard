@@ -1,9 +1,25 @@
 /**
- * UK Census 2021 — LSOA Explorer v4
- * National + LAD views · 32 datasets · Selection mode with Shapely dissolve
+ * UK Census Explorer v5
+ * England & Wales (LSOA) + Scotland (Data Zone)
+ * National + LAD views · Selection mode with Shapely dissolve
  */
 
 const API = '/api';
+
+/** Get the area code from a GeoJSON feature (LSOA or DZ). */
+function getFeatureCode(feature) {
+  return feature.properties.LSOA21CD || feature.properties.DZ22CD || '';
+}
+
+/** Get the area name from a GeoJSON feature. */
+function getFeatureName(feature) {
+  return feature.properties.LSOA21NM || feature.properties.DZ22NM || getFeatureCode(feature);
+}
+
+/** Check if a feature is from Scotland. */
+function isScotlandFeature(feature) {
+  return feature.properties.nation === 'SC' || !!feature.properties.DZ22CD;
+}
 
 const COLOUR_SCHEMES = {
   YlOrRd:['#ffffb2','#fed976','#feb24c','#fd8d3c','#fc4e2a','#e31a1c','#b10026'],
@@ -52,12 +68,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 function initMap() {
-  state.map = L.map('map', { center: [52.5, -1.5], zoom: 7, zoomControl: true, preferCanvas: true });
+  state.map = L.map('map', { center: [54.5, -3.0], zoom: 6, zoomControl: true, preferCanvas: true });
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 19,
   }).addTo(state.map);
   document.getElementById('btn-zoom-fit').addEventListener('click', fitToBounds);
-  document.getElementById('btn-reset').addEventListener('click', () => state.map.setView([52.5, -1.5], 7));
+  document.getElementById('btn-reset').addEventListener('click', () => state.map.setView([54.5, -3.0], 6));
   document.getElementById('close-detail').addEventListener('click', closeDetail);
 }
 
@@ -70,7 +86,7 @@ function initSelectionUI() {
 }
 
 async function waitForBoundaries() {
-  setOverlay(true, 'Loading national LSOA boundaries…');
+  setOverlay(true, 'Loading national boundaries…');
   for (let i = 0; i < 60; i++) {
     try {
       const res = await fetch(`${API}/health`);
@@ -78,7 +94,7 @@ async function waitForBoundaries() {
       if (data.boundaries_ready) { state.boundariesReady = true; return; }
     } catch (e) {}
     await new Promise(r => setTimeout(r, 1000));
-    setOverlay(true, `Loading national LSOA boundaries… (${i+1}s)`);
+    setOverlay(true, `Loading national boundaries… (${i+1}s)`);
   }
 }
 
@@ -123,7 +139,7 @@ async function loadData() {
   const boundaryParam = state.currentLAD
     ? `?lad_code=${state.currentLAD}&resolution=${resolution}`
     : `?resolution=${resolution}`;
-  setOverlay(true, state.currentLAD ? 'Loading LAD data…' : 'Loading national census data…');
+  setOverlay(true, state.currentLAD ? 'Loading area data…' : 'Loading national census data…');
   document.getElementById('demo-banner').style.display = 'none';
   try {
     const [valuesRes, boundaryRes] = await Promise.all([
@@ -140,7 +156,7 @@ async function loadData() {
     updateLegend();
     updateStatsGrid();
     renderMap();
-    setStatus(`${Object.keys(state.currentValues).length.toLocaleString()} LSOAs`, true);
+    setStatus(`${Object.keys(state.currentValues).length.toLocaleString()} areas`, true);
     setOverlay(false);
   } catch (e) {
     console.error('Load error:', e);
@@ -162,7 +178,10 @@ function renderDatasetList(categories) {
       const el = document.createElement('div');
       el.className = 'dataset-item' + (item.id === state.currentDataset ? ' active' : '');
       el.dataset.id = item.id;
-      el.innerHTML = `<div class="dataset-dot"></div><span class="dataset-label">${item.label}</span><span class="dataset-unit">${item.unit}</span>`;
+      const coverageBadge = item.coverage === 'uk'
+        ? '<span class="dataset-coverage uk" title="England, Wales &amp; Scotland">UK</span>'
+        : '<span class="dataset-coverage ew" title="England &amp; Wales only">E&amp;W</span>';
+      el.innerHTML = `<div class="dataset-dot"></div><span class="dataset-label">${item.label}</span>${coverageBadge}<span class="dataset-unit">${item.unit}</span>`;
       el.addEventListener('click', () => onDatasetChange(item.id, item.color_scheme));
       container.appendChild(el);
     });
@@ -186,13 +205,12 @@ function renderMap() {
 }
 
 function styleFeature(feature) {
-  const code = feature.properties.LSOA21CD;
+  const code = getFeatureCode(feature);
   const isSelected = state.selectedLSOAs.has(code);
   const value = state.currentValues[code];
   const fill = value !== undefined ? getColour(value) : '#2a3044';
 
   if (isSelected) {
-    // Show the choropleth colour through the selection, but with a bright border
     return {
       fillColor: fill, fillOpacity: 0.85,
       color: '#00ffd5', weight: 2.5, opacity: 1,
@@ -242,11 +260,12 @@ function updateStatsGrid() {
 let hoverPopup = null;
 function onFeatureHover(e, feature) {
   const layer = e.target;
-  const code = feature.properties.LSOA21CD;
-  const name = feature.properties.LSOA21NM || code;
+  const code = getFeatureCode(feature);
+  const name = getFeatureName(feature);
   const value = state.currentValues[code];
   const dsInfo = findDataset(state.currentDataset);
   const isInSelection = state.selectedLSOAs.has(code);
+  const areaType = isScotlandFeature(feature) ? 'Data Zone' : 'LSOA';
 
   if (!isInSelection) {
     layer.setStyle({ weight: 1.5, color: '#ffffff', fillOpacity: 0.9 });
@@ -256,38 +275,36 @@ function onFeatureHover(e, feature) {
   layer.bringToFront();
   if (hoverPopup) state.map.closePopup(hoverPopup);
   const selLabel = state.selectMode ? `<div style="font-size:10px;color:#00d2be;margin-top:6px">${isInSelection ? '⊖ Click to deselect' : '⊕ Click to select'}</div>` : '';
+  const nationBadge = isScotlandFeature(feature) ? `<div style="font-size:9px;color:#8b97b5;margin-top:2px">${areaType} · Scotland</div>` : '';
   hoverPopup = L.popup({ closeButton: false, offset: [0, -4] })
     .setLatLng(e.latlng)
-    .setContent(`<div class="lsoa-popup"><div class="lsoa-popup-name">${name}</div><div class="lsoa-popup-code">${code}</div><div class="lsoa-popup-value">${value !== undefined ? fmt(value) : 'No data'}</div><div class="lsoa-popup-unit">${dsInfo?.unit||''}</div>${selLabel}</div>`)
+    .setContent(`<div class="lsoa-popup"><div class="lsoa-popup-name">${name}</div><div class="lsoa-popup-code">${code}</div>${nationBadge}<div class="lsoa-popup-value">${value !== undefined ? fmt(value) : 'No data'}</div><div class="lsoa-popup-unit">${dsInfo?.unit||''}</div>${selLabel}</div>`)
     .openOn(state.map);
 }
 
 function onFeatureOut(e) {
-  const code = e.target.feature?.properties?.LSOA21CD;
+  const code = e.target.feature ? getFeatureCode(e.target.feature) : '';
   if (state.selectedLSOA === code) return;
   e.target.setStyle(styleFeature(e.target.feature));
   if (hoverPopup) { state.map.closePopup(hoverPopup); hoverPopup = null; }
 }
 
 function onFeatureClick(e, feature) {
-  const code = feature.properties.LSOA21CD;
+  const code = getFeatureCode(feature);
   if (hoverPopup) { state.map.closePopup(hoverPopup); hoverPopup = null; }
 
   if (state.selectMode) {
-    // Toggle LSOA in/out of selection
     if (state.selectedLSOAs.has(code)) {
       state.selectedLSOAs.delete(code);
     } else {
       state.selectedLSOAs.add(code);
     }
-    // Invalidate previous dissolve since selection changed
     state.dissolveResult = null;
     if (state.dissolvedLayer) {
       state.map.removeLayer(state.dissolvedLayer);
       state.dissolvedLayer = null;
     }
     updateSelectionUI();
-    // Explicitly restyle all features (resetStyle unreliable on canvas)
     if (state.geojsonLayer) {
       state.geojsonLayer.eachLayer(layer => {
         layer.setStyle(styleFeature(layer.feature));
@@ -303,7 +320,7 @@ function onFeatureClick(e, feature) {
       layer.setStyle(styleFeature(layer.feature));
     });
   }
-  openDetail(code, feature.properties.LSOA21NM || code,
+  openDetail(code, getFeatureName(feature),
     state.currentValues[code], findDataset(state.currentDataset));
 }
 
@@ -326,7 +343,7 @@ function updateSelectionUI() {
   if (btn) {
     btn.classList.toggle('active', state.selectMode);
     btn.innerHTML = state.selectMode
-      ? '<div class="select-toggle-icon"></div>Selection ON — click LSOAs to add/remove'
+      ? '<div class="select-toggle-icon"></div>Selection ON — click areas to add/remove'
       : '<div class="select-toggle-icon"></div>Paint selection mode';
   }
   const mapEl = document.getElementById('map');
@@ -349,7 +366,7 @@ function clearSelection() {
 
 async function dissolveSelection() {
   if (state.selectedLSOAs.size === 0) return;
-  setOverlay(true, `Dissolving ${state.selectedLSOAs.size} LSOAs…`);
+  setOverlay(true, `Dissolving ${state.selectedLSOAs.size} areas…`);
 
   try {
     const res = await fetch(`${API}/selection/dissolve`, {
@@ -400,7 +417,7 @@ function showDissolvePanel(result) {
   body.innerHTML = `
     <div class="selection-summary">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <span style="font-size:12px;font-weight:600;color:var(--text-primary)">${props.lsoa_count} LSOAs</span>
+        <span style="font-size:12px;font-weight:600;color:var(--text-primary)">${props.lsoa_count} areas</span>
         ${badge}
       </div>
       <div class="selection-stat-grid">
@@ -460,7 +477,7 @@ async function loadSelectionStats() {
 
 function renderSelectionStats(container, data) {
   let html = '<div style="padding:0 14px 14px">';
-  html += `<div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-muted);margin-bottom:8px;padding-top:8px;border-top:1px solid var(--border-subtle)">Aggregate Statistics (${data.selection_size} LSOAs)</div>`;
+  html += `<div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-muted);margin-bottom:8px;padding-top:8px;border-top:1px solid var(--border-subtle)">Aggregate Statistics (${data.selection_size} areas)</div>`;
 
   // Group by category from datasets
   const byCategory = {};
@@ -505,7 +522,7 @@ function doExport() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `census_selection_${state.selectedLSOAs.size}_lsoas.geojson`;
+  a.download = `census_selection_${state.selectedLSOAs.size}_areas.geojson`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -525,7 +542,9 @@ async function openDetail(code, name, value, dsInfo) {
 
 function renderDetailPanel(detail, mapValue, dsInfo) {
   const body = document.getElementById('detail-body');
-  let html = `<div class="detail-meta"><div class="detail-meta-item"><div class="detail-meta-label">LSOA Code</div><div class="detail-meta-value" style="font-size:11px">${detail.lsoa_code}</div></div><div class="detail-meta-item"><div class="detail-meta-label">Current View</div><div class="detail-meta-value" style="color:var(--accent)">${mapValue !== undefined ? fmt(mapValue) : '—'} ${dsInfo?.unit||''}</div></div></div>`;
+  const isScotland = detail.lsoa_code?.startsWith('S01');
+  const codeLabel = isScotland ? 'Data Zone' : 'LSOA Code';
+  let html = `<div class="detail-meta"><div class="detail-meta-item"><div class="detail-meta-label">${codeLabel}</div><div class="detail-meta-value" style="font-size:11px">${detail.lsoa_code}</div></div><div class="detail-meta-item"><div class="detail-meta-label">Current View</div><div class="detail-meta-value" style="color:var(--accent)">${mapValue !== undefined ? fmt(mapValue) : '—'} ${dsInfo?.unit||''}</div></div></div>`;
   Object.entries(detail.categories || {}).forEach(([catName, catData]) => {
     const entries = Object.entries(catData);
     if (!entries.length) return;
@@ -578,7 +597,7 @@ async function onDatasetChange(datasetId, colorScheme) {
     }
     // Re-assert selection UI in case it was lost
     updateSelectionUI();
-    setStatus(`${Object.keys(state.currentValues).length.toLocaleString()} LSOAs`, true);
+    setStatus(`${Object.keys(state.currentValues).length.toLocaleString()} areas`, true);
   } catch (e) { setStatus('Error', false); }
   setOverlay(false);
 }

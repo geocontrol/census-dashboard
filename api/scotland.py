@@ -587,28 +587,51 @@ SCOTLAND_INDICATOR_MAP = {
 
 
 def find_matching_columns(column_labels: list[str], search_terms: list[str]) -> list[int]:
-    """Find column indices where any search term appears in the label (case-insensitive)."""
-    matches = []
+    """
+    Find column indices for the 'All' total of a category in a cross-tab.
+
+    In a multivariate cross-tab like MV409, columns look like:
+      "Owned | All households | No central heating"
+      "Owned | All households"    ← this is the one we want
+      "Owned | One person household | All households"
+
+    We want the shortest (least-specific) column for each search term,
+    where the term matches the first part and there's at most one "All" suffix.
+    """
+    # First pass: find all columns where a search term matches the first part
+    candidates = []
     for i, label in enumerate(column_labels):
-        label_lower = label.lower()
+        parts = [p.strip() for p in label.split(" | ")]
+        first_part = parts[0].lower()
         for term in search_terms:
-            if term.lower() in label_lower:
-                matches.append(i)
+            if term.lower() in first_part:
+                candidates.append((i, len(parts), label))
                 break
+
+    if not candidates:
+        return []
+
+    # Pick the shortest (fewest pipe-delimited parts) for each — that's the aggregate total
+    min_depth = min(c[1] for c in candidates)
+    matches = [c[0] for c in candidates if c[1] == min_depth]
+
     return matches
 
 
 def find_first_matching_column(column_labels: list[str], search_terms: list[str]) -> Optional[int]:
-    """Find the first column where the label exactly starts with a search term or is the 'All' total."""
-    # First try: exact "All" total column (column 0 is typically the total)
+    """Find the first 'All' total column (typically column 0 for the overall total)."""
+    for i, label in enumerate(column_labels):
+        parts = [p.strip().lower() for p in label.split(" | ")]
+        for term in search_terms:
+            if term.lower() in parts[0] and len(parts) == 1:
+                return i
+    # Fallback: first match
     for i, label in enumerate(column_labels):
         label_lower = label.lower()
         for term in search_terms:
-            if term.lower() == label_lower.split(" | ")[0].lower():
+            if term.lower() in label_lower:
                 return i
-    # Fallback: partial match
-    matches = find_matching_columns(column_labels, search_terms)
-    return matches[0] if matches else None
+    return None
 
 
 def process_scotland_indicator(

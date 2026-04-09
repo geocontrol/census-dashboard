@@ -51,6 +51,14 @@
     </div>
 
     <div class="sidebar-section">
+      <h3 class="sidebar-title">Selection Tool</h3>
+      <button class="select-toggle" id="btn-select-mode">
+        <div class="select-toggle-icon"></div>
+        Paint selection mode
+      </button>
+    </div>
+
+    <div class="sidebar-section">
       <h3 class="sidebar-title">Dataset</h3>
       <div id="dataset-categories" class="dataset-list">
         <!-- Populated by JS -->
@@ -74,6 +82,16 @@
 
   <!-- ─────────── MAP -->
   <main class="map-container">
+    <!-- Selection count bar -->
+    <div class="select-count-bar" id="select-count-bar">
+      <span><span class="count" id="select-count">0</span> LSOAs selected</span>
+      <div class="select-actions">
+        <button class="select-action-btn" id="btn-dissolve" title="Compute boundary">Dissolve</button>
+        <button class="select-action-btn" id="btn-stats" title="Aggregate stats">Stats</button>
+        <button class="select-action-btn" id="btn-export" title="Export GeoJSON">Export</button>
+        <button class="select-action-btn danger" id="btn-clear-selection" title="Clear selection">Clear</button>
+      </div>
+    </div>
     <div id="map"></div>
 
     <!-- Loading overlay -->

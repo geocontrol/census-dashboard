@@ -403,6 +403,43 @@ def aggregate_oa_to_dz(
     return result
 
 
+def aggregate_oa_to_dz_components(
+    oa_data: dict[str, list[float]],
+    oa_to_dz: dict[str, str],
+    numerator_cols: list[int],
+    denominator_col: Optional[int] = None,
+) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+    """
+    Aggregate OA-level data to DZ level while preserving numerator/denominator totals.
+
+    Returns:
+        (values, numerators, denominators)
+    """
+    dz_num = {}
+    dz_den = {}
+
+    for oa, values in oa_data.items():
+        dz = oa_to_dz.get(oa)
+        if not dz:
+            continue
+
+        num = sum(values[c] for c in numerator_cols if c < len(values))
+        dz_num[dz] = dz_num.get(dz, 0.0) + num
+
+        if denominator_col is not None and denominator_col < len(values):
+            dz_den[dz] = dz_den.get(dz, 0.0) + values[denominator_col]
+
+    result = {}
+    for dz, num in dz_num.items():
+        if denominator_col is not None:
+            den = dz_den.get(dz, 0.0)
+            result[dz] = round(num / den * 100, 2) if den > 0 else 0.0
+        else:
+            result[dz] = round(num, 2)
+
+    return result, dz_num, dz_den
+
+
 # ═══════ Scotland indicator mappings ═══════
 # Maps E&W dataset IDs to Scottish CSV table + column extraction config
 # Each entry specifies: csv file stem, numerator column indices, denominator column index
@@ -689,8 +726,13 @@ def process_scotland_indicator(
         return None
 
     # Aggregate to DZ level
+    numerators = {}
+    denominators = {}
+
     if mapping_info["extract"] == "rate" and den_col is not None:
-        values = aggregate_oa_to_dz(oa_data, oa_to_dz, num_cols, den_col)
+        values, numerators, denominators = aggregate_oa_to_dz_components(
+            oa_data, oa_to_dz, num_cols, den_col
+        )
     else:
         values = aggregate_oa_to_dz(oa_data, oa_to_dz, num_cols)
 
@@ -722,6 +764,8 @@ def process_scotland_indicator(
         "values": values,
         "names": names,
         "stats": stats,
+        "numerators": numerators,
+        "denominators": denominators,
         "source": "Scotland's Census 2022 — NRS",
     }
 
@@ -848,16 +892,25 @@ SCOTTISH_COUNCIL_AREAS = [
 _dz_to_council: dict[str, str] = {}
 
 
+def council_code_to_dz_prefix(council_code: str) -> str:
+    """Convert an S12 council code to the matching DZ22 prefix."""
+    suffix = council_code[-3:]
+    return f"S01{suffix}"
+
+
 def build_dz_council_mapping(dz22_geojson_path: Path) -> dict[str, str]:
     """Build a mapping from DZ22 code to council area code from boundary properties."""
     global _dz_to_council
     if _dz_to_council:
         return _dz_to_council
 
-    # For now, we can't easily map without LA codes in the shapefile.
-    # We'll use a different approach: filter DZs by spatial containment.
-    # But for the MVP, we'll return all Scotland DZs for any S12 code.
-    # This mapping will be refined when we have the actual data.
+    geojson = json.loads(dz22_geojson_path.read_text())
+    for feature in geojson.get("features", []):
+        dz_code = feature.get("properties", {}).get("DZ22CD", "")
+        if dz_code.startswith("S01") and len(dz_code) >= 6:
+            council_suffix = dz_code[3:6]
+            _dz_to_council[dz_code] = f"S120000{council_suffix}"
+
     return _dz_to_council
 
 
@@ -866,7 +919,5 @@ def get_council_area_dzs(
     dz22_geojson_path: Path,
 ) -> list[str]:
     """Get all DZ22 codes for a Scottish council area."""
-    # Load all DZ features and check which ones belong to the council area
-    # For now, return all Scotland DZs (to be refined with spatial lookup)
-    geojson = json.loads(dz22_geojson_path.read_text())
-    return [f["properties"]["DZ22CD"] for f in geojson.get("features", [])]
+    dz_to_council = build_dz_council_mapping(dz22_geojson_path)
+    return [dz for dz, mapped_council in dz_to_council.items() if mapped_council == council_code]

@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 COPY scotland.py .
+COPY services/ ./services/
 
 RUN mkdir -p /app/data
 

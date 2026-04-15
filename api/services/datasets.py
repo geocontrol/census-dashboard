@@ -265,6 +265,105 @@ async def fetch_lsoa_detail(lsoa_code):
     return detail
 
 
+def build_explorer_table(
+    datasets_payload: dict,
+    dataset_meta: dict,
+    sort_by: Optional[str] = None,
+    sort_dir: str = "asc",
+    offset: int = 0,
+    limit: Optional[int] = 100,
+    filter_nation: Optional[str] = None,
+    search: Optional[str] = None,
+) -> dict:
+    """Join multiple per-dataset {values,names} payloads into a unified, filtered, sorted, paginated table.
+
+    Args:
+        datasets_payload: {dataset_id: {"values": {code: v}, "names": {code: name}}}
+        dataset_meta: {dataset_id: {"label": str, "unit": str}}
+        limit: None or 0 returns all rows (for CSV export).
+    """
+    area_codes: set = set()
+    names: dict = {}
+    for payload in datasets_payload.values():
+        values = payload.get("values") or {}
+        area_codes.update(values.keys())
+        for code, name in (payload.get("names") or {}).items():
+            names.setdefault(code, name)
+
+    def _nation(code: str) -> str:
+        if code.startswith("S01"):
+            return "SC"
+        if code.startswith("N"):
+            return "NI"
+        return "EW"
+
+    rows = []
+    for code in area_codes:
+        row = {
+            "area_code": code,
+            "area_name": names.get(code, code),
+            "nation": _nation(code),
+        }
+        for dataset_id, payload in datasets_payload.items():
+            row[dataset_id] = (payload.get("values") or {}).get(code)
+        rows.append(row)
+
+    if filter_nation:
+        rows = [r for r in rows if r["nation"] == filter_nation]
+    if search:
+        query = search.lower()
+        rows = [
+            r for r in rows
+            if query in (r["area_name"] or "").lower() or query in r["area_code"].lower()
+        ]
+
+    column_stats = {}
+    for dataset_id in datasets_payload:
+        numeric = [r[dataset_id] for r in rows if r[dataset_id] is not None]
+        if numeric:
+            column_stats[dataset_id] = compute_stats(numeric)
+
+    reverse = sort_dir.lower() == "desc"
+    if sort_by in ("area_code", "area_name", "nation"):
+        rows.sort(key=lambda r: (r.get(sort_by) or "").lower() if isinstance(r.get(sort_by), str) else "", reverse=reverse)
+    elif sort_by in datasets_payload:
+        null_sentinel = float("-inf") if reverse else float("inf")
+        rows.sort(
+            key=lambda r: r[sort_by] if r[sort_by] is not None else null_sentinel,
+            reverse=reverse,
+        )
+    else:
+        rows.sort(key=lambda r: (r["area_name"] or "").lower())
+
+    total = len(rows)
+    if limit and limit > 0:
+        sliced = rows[offset:offset + limit]
+    else:
+        sliced = rows
+
+    columns = ["area_code", "area_name", "nation"] + list(datasets_payload.keys())
+    column_labels = {
+        "area_code": "Area Code",
+        "area_name": "Area",
+        "nation": "Nation",
+    }
+    for dataset_id in datasets_payload:
+        meta = dataset_meta.get(dataset_id, {})
+        label = meta.get("label", dataset_id)
+        unit = meta.get("unit")
+        column_labels[dataset_id] = f"{label} ({unit})" if unit else label
+
+    return {
+        "columns": columns,
+        "column_labels": column_labels,
+        "rows": sliced,
+        "stats": column_stats,
+        "total_rows": total,
+        "offset": offset,
+        "limit": limit or 0,
+    }
+
+
 async def fetch_lad_list():
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:

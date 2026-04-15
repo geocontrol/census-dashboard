@@ -16,6 +16,11 @@ function initSelectionUI() {
   document.getElementById('btn-export').addEventListener('click', exportSelection);
 }
 
+function initViewToggle() {
+  document.getElementById('btn-view-map').addEventListener('click', () => setAppView('map'));
+  document.getElementById('btn-view-table').addEventListener('click', () => setAppView('table'));
+}
+
 async function waitForBoundaries() {
   setOverlay(true, 'Loading national boundaries…');
   for (let i = 0; i < 60; i++) {
@@ -176,6 +181,7 @@ window.toggleCategory = function(el) {
 };
 
 async function onDatasetChange(datasetId, colorScheme) {
+  const previousDataset = state.currentDataset;
   state.currentDataset = datasetId;
   state.currentColorScheme = colorScheme;
   state.selectedLSOA = null;
@@ -198,6 +204,9 @@ async function onDatasetChange(datasetId, colorScheme) {
     setStatus('Error', false);
   }
   setOverlay(false);
+  if (typeof explorerOnDatasetChange === 'function') {
+    explorerOnDatasetChange(previousDataset, datasetId);
+  }
 }
 
 async function onLADChange(e) {
@@ -211,6 +220,7 @@ async function onLADChange(e) {
 document.addEventListener('DOMContentLoaded', async () => {
   initMap();
   initSelectionUI();
+  initViewToggle();
   await loadDatasets();
   await loadLADList();
   await waitForBoundaries();

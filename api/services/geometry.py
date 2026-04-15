@@ -1,11 +1,16 @@
+import io
 import json
 import logging
+import tempfile
+import zipfile
 from pathlib import Path
 
 import aiofiles
 import httpx
+import shapefile
 from fastapi import HTTPException
 from shapely.geometry import mapping, shape
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from shapely import buffer as shp_buffer
 
@@ -341,3 +346,68 @@ def dissolve_selected_geometries(lsoa_codes: list[str]) -> dict:
             "border_neighbours": sorted(border_neighbours)[:200],
         },
     }
+
+
+WGS84_WKT = (
+    'GEOGCS["WGS 84",DATUM["WGS_1984",'
+    'SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],'
+    'AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],'
+    'UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],'
+    'AUTHORITY["EPSG","4326"]]'
+)
+
+
+def _polygon_parts(polygon) -> list[list[list[float]]]:
+    """Convert a shapely Polygon into shapefile parts (CW exterior, CCW holes)."""
+    oriented = orient(polygon, sign=-1.0)
+    parts = [[list(coord) for coord in oriented.exterior.coords]]
+    for interior in oriented.interiors:
+        parts.append([list(coord) for coord in interior.coords])
+    return parts
+
+
+def export_dissolve_as_shapefile(lsoa_codes: list[str]) -> bytes:
+    """Dissolve a selection and return a zipped ESRI Shapefile (.shp/.shx/.dbf/.prj) as bytes."""
+    dissolve = dissolve_selected_geometries(lsoa_codes)
+    geom = shape(dissolve["geometry"])
+    props = dissolve["properties"]
+
+    if geom.geom_type == "Polygon":
+        polygons = [geom]
+    elif geom.geom_type == "MultiPolygon":
+        polygons = list(geom.geoms)
+    else:
+        raise HTTPException(500, f"Unsupported geometry type for shapefile export: {geom.geom_type}")
+
+    all_parts: list[list[list[float]]] = []
+    for poly in polygons:
+        all_parts.extend(_polygon_parts(poly))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir) / "census_selection"
+        writer = shapefile.Writer(str(base), shapeType=shapefile.POLYGON)
+        writer.field("lsoa_count", "N", size=10, decimal=0)
+        writer.field("area_km2", "N", size=19, decimal=3)
+        writer.field("perim_km", "N", size=19, decimal=3)
+        writer.field("contiguous", "L")
+        writer.field("components", "N", size=10, decimal=0)
+
+        writer.poly(all_parts)
+        writer.record(
+            props.get("lsoa_count", 0),
+            props.get("area_km2", 0.0),
+            props.get("perimeter_km", 0.0),
+            bool(props.get("contiguous", False)),
+            props.get("components", 1),
+        )
+        writer.close()
+
+        (base.with_suffix(".prj")).write_text(WGS84_WKT)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for suffix in (".shp", ".shx", ".dbf", ".prj"):
+                path = base.with_suffix(suffix)
+                if path.exists():
+                    zf.write(path, arcname=path.name)
+        return buf.getvalue()

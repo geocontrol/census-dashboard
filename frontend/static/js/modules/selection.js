@@ -1,7 +1,10 @@
 function toggleSelectMode() {
   state.selectMode = !state.selectMode;
+  if (!state.selectMode) {
+    clearSelection();
+    return;
+  }
   updateSelectionUI();
-  if (!state.selectMode && state.selectedLSOAs.size === 0) closeDetail();
 }
 
 function updateSelectionUI() {
@@ -81,6 +84,7 @@ function showDissolvePanel(result) {
     </div>
     <div style="padding:12px 14px">
       <button class="selection-export-btn" onclick="exportSelection()">⬇ Export dissolved GeoJSON</button>
+      <button class="selection-export-btn" style="margin-top:6px" onclick="exportShapefile()">⬇ Export Shapefile (.shp)</button>
       <button class="selection-export-btn" style="margin-top:6px" onclick="loadSelectionStats()">📊 Load aggregate statistics</button>
     </div>
     <div id="selection-stats-container"></div>
@@ -140,6 +144,29 @@ function exportSelection() {
     return;
   }
   doExport();
+}
+
+async function exportShapefile() {
+  if (state.selectedLSOAs.size === 0) return;
+  setOverlay(true, `Building shapefile for ${state.selectedLSOAs.size} areas…`);
+  try {
+    const res = await fetch(`${API}/selection/export/shapefile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lsoa_codes: [...state.selectedLSOAs] }),
+    });
+    if (!res.ok) throw new Error(`Shapefile export failed: ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `census_selection_${state.selectedLSOAs.size}_areas.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('Shapefile export error:', e);
+  }
+  setOverlay(false);
 }
 
 function doExport() {

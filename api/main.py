@@ -4,6 +4,8 @@ National-scale LSOA (E&W) + Data Zone (Scotland) data
 """
 
 import asyncio
+import csv
+import io
 import json
 import logging
 from pathlib import Path
@@ -13,6 +15,7 @@ import aiofiles
 from cachetools import TTLCache
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from scotland import (
@@ -30,6 +33,7 @@ from services.dataset_config import CENSUS_DATASETS
 from services.datasets import (
     aggregate_rate_dataset,
     build_dataset_catalog,
+    build_explorer_table,
     compute_stats,
     fetch_lad_list,
     fetch_lsoa_detail,
@@ -45,6 +49,7 @@ from services.geometry import (
     build_scotland_adjacency,
     build_scotland_geometry_index,
     dissolve_selected_geometries,
+    export_dissolve_as_shapefile,
     fetch_all_boundaries,
     fetch_lad_boundaries,
     get_adjacency_payload,
@@ -425,6 +430,17 @@ async def dissolve_selection(req: SelectionRequest):
     return dissolve_selected_geometries(req.lsoa_codes)
 
 
+@app.post("/api/selection/export/shapefile")
+async def export_selection_shapefile(req: SelectionRequest):
+    archive = export_dissolve_as_shapefile(req.lsoa_codes)
+    filename = f"census_selection_{len(req.lsoa_codes)}_areas.zip"
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/selection/aggregate")
 async def aggregate_selection(req: AggregateRequest):
     if not req.lsoa_codes:
@@ -478,3 +494,96 @@ async def aggregate_selection(req: AggregateRequest):
         }
 
     return {"selection_size": len(selection_set), "datasets": results}
+
+
+MAX_EXPLORER_DATASETS = 10
+
+
+async def _gather_explorer_payloads(dataset_ids: List[str], lad_code: Optional[str]):
+    payload: dict = {}
+    meta: dict = {}
+    for dataset_id in dataset_ids:
+        ds_data = await get_lsoa_data(dataset_id, lad_code)
+        payload[dataset_id] = {
+            "values": ds_data.get("values", {}),
+            "names": ds_data.get("names", {}),
+        }
+        ds = CENSUS_DATASETS[dataset_id]
+        meta[dataset_id] = {"label": ds["label"], "unit": ds["unit"]}
+    return payload, meta
+
+
+def _parse_dataset_ids(raw: str) -> List[str]:
+    ids = [d.strip() for d in raw.split(",") if d.strip()]
+    valid = [d for d in ids if d in CENSUS_DATASETS]
+    return valid[:MAX_EXPLORER_DATASETS]
+
+
+@app.get("/api/explorer/data")
+async def explorer_data(
+    datasets: str = Query(..., description="Comma-separated dataset IDs"),
+    lad_code: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query(None),
+    sort_dir: str = Query("asc"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    filter_nation: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+):
+    ids = _parse_dataset_ids(datasets)
+    if not ids:
+        raise HTTPException(400, "No valid dataset IDs provided")
+
+    payload, meta = await _gather_explorer_payloads(ids, lad_code)
+    return build_explorer_table(
+        payload,
+        meta,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        offset=offset,
+        limit=limit,
+        filter_nation=filter_nation,
+        search=search,
+    )
+
+
+@app.get("/api/explorer/export")
+async def explorer_export(
+    datasets: str = Query(...),
+    lad_code: Optional[str] = Query(None),
+    filter_nation: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query(None),
+    sort_dir: str = Query("asc"),
+):
+    ids = _parse_dataset_ids(datasets)
+    if not ids:
+        raise HTTPException(400, "No valid dataset IDs provided")
+
+    payload, meta = await _gather_explorer_payloads(ids, lad_code)
+    table = build_explorer_table(
+        payload,
+        meta,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        offset=0,
+        limit=0,
+        filter_nation=filter_nation,
+        search=search,
+    )
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([table["column_labels"].get(col, col) for col in table["columns"]])
+    for row in table["rows"]:
+        writer.writerow([
+            "" if row.get(col) is None else row.get(col)
+            for col in table["columns"]
+        ])
+
+    filename = f"census_explorer_{len(ids)}_datasets.csv"
+    return Response(
+        content=buf.getvalue().encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

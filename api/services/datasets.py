@@ -5,6 +5,7 @@ from typing import Callable, Optional
 
 import httpx
 
+from northern_ireland import NI_INDICATOR_MAP
 from scotland import SCOTLAND_INDICATOR_MAP
 from services.dataset_config import DETAIL_DATASETS, NOMIS
 
@@ -29,8 +30,21 @@ def compute_stats(values):
     }
 
 
+def _coverage_for(key: str, sc_ids: set, ni_ids: set) -> str:
+    in_sc = key in sc_ids
+    in_ni = key in ni_ids
+    if in_sc and in_ni:
+        return "uk"
+    if in_sc:
+        return "gb"
+    if in_ni:
+        return "ni_only"
+    return "ew"
+
+
 def build_dataset_catalog(census_datasets: dict) -> dict:
     sc_ids = set(SCOTLAND_INDICATOR_MAP.keys()) | {"population_density", "population_total"}
+    ni_ids = set(NI_INDICATOR_MAP.keys())
     categories = {}
     for key, dataset in census_datasets.items():
         categories.setdefault(dataset["category"], []).append(
@@ -40,7 +54,7 @@ def build_dataset_catalog(census_datasets: dict) -> dict:
                 "description": dataset["description"],
                 "unit": dataset["unit"],
                 "color_scheme": dataset["color_scheme"],
-                "coverage": "uk" if key in sc_ids else "ew",
+                "coverage": _coverage_for(key, sc_ids, ni_ids),
             }
         )
     return {"categories": categories, "total": len(census_datasets)}

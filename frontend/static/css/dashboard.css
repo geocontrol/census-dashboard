@@ -248,6 +248,14 @@ a:hover { text-decoration: underline; }
   background: rgba(0, 210, 190, 0.15);
   color: #00d2be;
 }
+.dataset-coverage.gb {
+  background: rgba(86, 156, 214, 0.15);
+  color: #569cd6;
+}
+.dataset-coverage.ni-only {
+  background: rgba(206, 145, 120, 0.15);
+  color: #ce9178;
+}
 .dataset-coverage.ew {
   background: rgba(139, 151, 181, 0.12);
   color: #6b7394;

@@ -18,6 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from northern_ireland import (
+    NI_LOCAL_GOVERNMENT_DISTRICTS,
+    download_dz21_boundaries,
+    get_ni_lgd_dzs,
+)
 from scotland import (
     SCOTLAND_INDICATOR_MAP,
     SCOTTISH_COUNCIL_AREAS,
@@ -46,6 +51,8 @@ from services.geometry import (
     adjacency_graph,
     build_adjacency_graph,
     build_geometry_index,
+    build_ni_adjacency,
+    build_ni_geometry_index,
     build_scotland_adjacency,
     build_scotland_geometry_index,
     dissolve_selected_geometries,
@@ -113,6 +120,13 @@ async def startup_prefetch():
         asyncio.create_task(_prefetch_scotland_census_data())
     except Exception as exc:
         logger.error(f"Scotland lookup/census setup failed: {exc}")
+
+    try:
+        dz21_file = await download_dz21_boundaries(DATA_DIR)
+        await build_ni_geometry_index(dz21_file)
+        await build_ni_adjacency(dz21_file)
+    except Exception as exc:
+        logger.error(f"NI boundary setup failed: {exc}")
 
 
 async def _prefetch_scotland_census_data():
@@ -213,6 +227,35 @@ def _filter_scotland_data_for_council(lad_code: str, sc_data: dict) -> dict:
     return filtered
 
 
+def _build_ni_detail(dz_code: str) -> dict:
+    """Minimal detail payload for an NI Data Zone — boundary metadata only.
+
+    Indicator-level detail will populate once NI_INDICATOR_MAP is implemented.
+    """
+    name = dz_code
+    lgd_name = ""
+    dz21_file = DATA_DIR / "boundaries_ni_dz21.geojson"
+    if dz21_file.exists():
+        try:
+            geojson = json.loads(dz21_file.read_text())
+            for feat in geojson.get("features", []):
+                props = feat.get("properties", {}) or {}
+                if props.get("DZ2021CD") == dz_code:
+                    name = props.get("DZ2021NM", dz_code)
+                    lgd_name = props.get("LGD2014NM", "")
+                    break
+        except Exception:
+            pass
+
+    return {
+        "lsoa_code": dz_code,
+        "name": name,
+        "source": "NISRA Census 2021 — boundary metadata only (indicator data pending)",
+        "categories": {"Geography": {"Local Government District": lgd_name}} if lgd_name else {},
+        "precomputed_percentages": True,
+    }
+
+
 def _build_scotland_detail(dz_code: str) -> dict:
     name = scotland_dz_names.get(dz_code, dz_code)
     categories = {}
@@ -249,6 +292,15 @@ async def get_lsoa_data(dataset_id: str, lad_code: Optional[str] = Query(None)):
         if sc_data:
             return _filter_scotland_data_for_council(lad_code, sc_data)
         return {"dataset_id": dataset_id, "values": {}, "names": {}, "stats": {}, "source": "No Scotland data"}
+
+    if lad_code and lad_code.startswith("N09"):
+        return {
+            "dataset_id": dataset_id,
+            "values": {},
+            "names": {},
+            "stats": {},
+            "source": "Northern Ireland indicator data not yet integrated",
+        }
 
     scope = lad_code or "national"
     cache_key = f"data:{dataset_id}:{scope}"
@@ -287,6 +339,7 @@ async def get_lsoa_boundaries(lad_code: Optional[str] = Query(None), resolution:
 
         bsc_file = DATA_DIR / "boundaries_national_bsc.geojson"
         dz22_file = DATA_DIR / "boundaries_scotland_dz22.geojson"
+        dz21_file = DATA_DIR / "boundaries_ni_dz21.geojson"
         if not bsc_file.exists():
             raise HTTPException(status_code=503, detail="National boundaries not yet loaded")
 
@@ -299,6 +352,10 @@ async def get_lsoa_boundaries(lad_code: Optional[str] = Query(None), resolution:
             async with aiofiles.open(dz22_file) as f:
                 sc_geojson = json.loads(await f.read())
             ew_geojson["features"].extend(sc_geojson.get("features", []))
+        if dz21_file.exists():
+            async with aiofiles.open(dz21_file) as f:
+                ni_geojson = json.loads(await f.read())
+            ew_geojson["features"].extend(ni_geojson.get("features", []))
         data_cache[cache_key] = ew_geojson
         return ew_geojson
 
@@ -317,6 +374,24 @@ async def get_lsoa_boundaries(lad_code: Optional[str] = Query(None), resolution:
         geojson["features"] = [
             feature for feature in geojson.get("features", [])
             if feature.get("properties", {}).get("DZ22CD") in allowed_codes
+        ]
+        data_cache[cache_key] = geojson
+        return geojson
+
+    if lad_code.startswith("N09"):
+        cache_key = f"boundaries:{lad_code}:dz21"
+        if cache_key in data_cache:
+            return data_cache[cache_key]
+
+        dz21_file = DATA_DIR / "boundaries_ni_dz21.geojson"
+        if not dz21_file.exists():
+            raise HTTPException(status_code=503, detail="NI boundaries not yet loaded")
+
+        async with aiofiles.open(dz21_file) as f:
+            geojson = json.loads(await f.read())
+        geojson["features"] = [
+            feature for feature in geojson.get("features", [])
+            if feature.get("properties", {}).get("LGD2014CD") == lad_code
         ]
         data_cache[cache_key] = geojson
         return geojson
@@ -356,6 +431,8 @@ async def get_lsoa_detail_ep(lsoa_code: str):
 
     if lsoa_code.startswith("S01"):
         result = _build_scotland_detail(lsoa_code)
+    elif lsoa_code.startswith("N20"):
+        result = _build_ni_detail(lsoa_code)
     else:
         result = await fetch_lsoa_detail(lsoa_code)
 
@@ -373,6 +450,7 @@ async def get_lad_list():
 
     result = await fetch_lad_list()
     result["lads"].extend(SCOTTISH_COUNCIL_AREAS)
+    result["lads"].extend(NI_LOCAL_GOVERNMENT_DISTRICTS)
     result["lads"].sort(key=lambda item: item["name"])
 
     cache_file = DATA_DIR / "lad_list.json"
@@ -390,6 +468,7 @@ async def health():
         "boundaries_ready": (DATA_DIR / "boundaries_national_bsc.geojson").exists(),
         "scotland_boundaries_ready": (DATA_DIR / "boundaries_scotland_dz22.geojson").exists(),
         "scotland_data_indicators": len(scotland_data_cache),
+        "ni_boundaries_ready": (DATA_DIR / "boundaries_ni_dz21.geojson").exists(),
     }
 
 

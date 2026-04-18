@@ -197,6 +197,88 @@ async def build_scotland_adjacency(dz22_file: Path):
     logger.info(f"Scotland adjacency graph built: {len(adj)} DZs, {total_edges} edges")
 
 
+async def build_ni_geometry_index(dz21_file: Path):
+    """Load Northern Ireland DZ2021 geometries into the shared geometry index."""
+    async with aiofiles.open(dz21_file) as f:
+        geojson = json.loads(await f.read())
+
+    count = 0
+    for feat in geojson.get("features", []):
+        code = feat["properties"].get("DZ2021CD", "")
+        if not code:
+            continue
+        try:
+            geom = shape(feat["geometry"])
+            if not geom.is_valid:
+                geom = geom.buffer(0)
+            lsoa_geometries[code] = geom
+            count += 1
+        except Exception:
+            continue
+
+    logger.info(f"NI geometry index loaded: {count} DZs (total geometries: {len(lsoa_geometries)})")
+
+
+async def build_ni_adjacency(dz21_file: Path):
+    """Build adjacency graph for NI DZ2021 features and merge into the main graph."""
+    adj_file = dz21_file.parent / "adjacency_graph_ni.json"
+    if adj_file.exists():
+        async with aiofiles.open(adj_file) as f:
+            ni_adj = json.loads(await f.read())
+        adjacency_graph.update(ni_adj)
+        logger.info(f"NI adjacency graph loaded from cache: {len(ni_adj)} DZs")
+        return
+
+    logger.info("Building NI DZ2021 adjacency graph...")
+    async with aiofiles.open(dz21_file) as f:
+        geojson = json.loads(await f.read())
+
+    geoms = {}
+    for feat in geojson.get("features", []):
+        code = feat["properties"].get("DZ2021CD", "")
+        if not code:
+            continue
+        try:
+            geom = shape(feat["geometry"])
+            if not geom.is_valid:
+                geom = geom.buffer(0)
+            geoms[code] = geom
+        except Exception:
+            continue
+
+    from shapely import STRtree
+
+    codes = list(geoms.keys())
+    polys = [geoms[c] for c in codes]
+    tree = STRtree(polys)
+
+    adj = {c: [] for c in codes}
+    for i, code in enumerate(codes):
+        geom = polys[i]
+        for j in tree.query(geom):
+            if j == i:
+                continue
+            try:
+                intersection = geom.intersection(polys[j])
+                if not intersection.is_empty and intersection.geom_type in (
+                    "LineString",
+                    "MultiLineString",
+                    "GeometryCollection",
+                    "Polygon",
+                    "MultiPolygon",
+                ):
+                    adj[code].append(codes[j])
+            except Exception:
+                continue
+
+    adjacency_graph.update(adj)
+    async with aiofiles.open(adj_file, "w") as f:
+        await f.write(json.dumps(adj))
+
+    total_edges = sum(len(v) for v in adj.values()) // 2
+    logger.info(f"NI adjacency graph built: {len(adj)} DZs, {total_edges} edges")
+
+
 async def fetch_all_boundaries(service_url: str, label: str) -> dict:
     all_features = []
     offset = 0

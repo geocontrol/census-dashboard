@@ -1,15 +1,25 @@
 const API = '/api';
 
 function getFeatureCode(feature) {
-  return feature.properties.LSOA21CD || feature.properties.DZ22CD || '';
+  return feature.properties.LSOA21CD
+      || feature.properties.DZ22CD
+      || feature.properties.DZ2021CD
+      || '';
 }
 
 function getFeatureName(feature) {
-  return feature.properties.LSOA21NM || feature.properties.DZ22NM || getFeatureCode(feature);
+  return feature.properties.LSOA21NM
+      || feature.properties.DZ22NM
+      || feature.properties.DZ2021NM
+      || getFeatureCode(feature);
 }
 
 function isScotlandFeature(feature) {
   return feature.properties.nation === 'SC' || !!feature.properties.DZ22CD;
+}
+
+function isNorthernIrelandFeature(feature) {
+  return feature.properties.nation === 'NI' || !!feature.properties.DZ2021CD;
 }
 
 const COLOUR_SCHEMES = {

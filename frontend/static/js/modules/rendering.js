@@ -1,3 +1,14 @@
+function renderCoverageBadge(coverage) {
+  const tiers = {
+    uk:      { cls: 'uk',      label: 'UK',     title: 'England, Wales, Scotland &amp; Northern Ireland' },
+    gb:      { cls: 'gb',      label: 'GB',     title: 'England, Wales &amp; Scotland' },
+    ni_only: { cls: 'ni-only', label: 'NI',     title: 'Northern Ireland only' },
+    ew:      { cls: 'ew',      label: 'E&amp;W', title: 'England &amp; Wales only' },
+  };
+  const tier = tiers[coverage] || tiers.ew;
+  return `<span class="dataset-coverage ${tier.cls}" title="${tier.title}">${tier.label}</span>`;
+}
+
 function renderDatasetList(categories) {
   const container = document.getElementById('dataset-categories');
   container.innerHTML = '';
@@ -10,9 +21,7 @@ function renderDatasetList(categories) {
       const el = document.createElement('div');
       el.className = 'dataset-item' + (item.id === state.currentDataset ? ' active' : '');
       el.dataset.id = item.id;
-      const coverageBadge = item.coverage === 'uk'
-        ? '<span class="dataset-coverage uk" title="England, Wales &amp; Scotland">UK</span>'
-        : '<span class="dataset-coverage ew" title="England &amp; Wales only">E&amp;W</span>';
+      const coverageBadge = renderCoverageBadge(item.coverage);
       el.innerHTML = `<div class="dataset-dot"></div><span class="dataset-label">${item.label}</span>${coverageBadge}<span class="dataset-unit">${item.unit}</span>`;
       el.addEventListener('click', () => onDatasetChange(item.id, item.color_scheme));
       container.appendChild(el);

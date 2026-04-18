@@ -19,11 +19,15 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from northern_ireland import (
+    NI_INDICATOR_MAP,
     NI_LOCAL_GOVERNMENT_DISTRICTS,
     compute_ni_population_data,
     download_dz21_boundaries,
+    download_ni_main_statistics,
     download_ni_population_xlsx,
     get_ni_lgd_dzs,
+    process_all_ni_indicators,
+    process_ni_indicator,
 )
 from scotland import (
     SCOTLAND_INDICATOR_MAP,
@@ -145,6 +149,24 @@ async def _prefetch_ni_census_data(dz21_file: Path):
     except Exception as exc:
         logger.error(f"NI population data setup failed: {exc}")
 
+    try:
+        ms_dir = await download_ni_main_statistics(DATA_DIR)
+        for dataset_id in NI_INDICATOR_MAP:
+            cache_file = DATA_DIR / f"data_{dataset_id}_national_ni.json"
+            if cache_file.exists():
+                ni_data_cache[dataset_id] = json.loads(cache_file.read_text())
+                continue
+            result = process_ni_indicator(dataset_id, ms_dir, dz21_file)
+            if result:
+                cache_file.write_text(json.dumps(result))
+                ni_data_cache[dataset_id] = result
+                logger.info(f"  NI {dataset_id}: {len(result['values'])} DZs (LGD-level from MS-{result['source'].split('MS-')[1].split(' ')[0]})")
+            else:
+                logger.warning(f"  NI {dataset_id}: not produced")
+        logger.info(f"NI indicator data ready: {len(ni_data_cache)} datasets cached")
+    except Exception as exc:
+        logger.error(f"NI indicator data setup failed: {exc}")
+
 
 async def _prefetch_scotland_census_data():
     try:
@@ -265,6 +287,16 @@ def _get_ni_data(dataset_id: str) -> Optional[dict]:
                 ni_data_cache[dataset_id] = result
                 return result
 
+    if dataset_id in NI_INDICATOR_MAP:
+        dz21_file = DATA_DIR / "boundaries_ni_dz21.geojson"
+        ms_dir = DATA_DIR / "ni_main_statistics"
+        if dz21_file.exists() and (ms_dir / ".downloaded").exists():
+            result = process_ni_indicator(dataset_id, ms_dir, dz21_file)
+            if result:
+                cache_file.write_text(json.dumps(result))
+                ni_data_cache[dataset_id] = result
+                return result
+
     return None
 
 
@@ -313,7 +345,8 @@ def _build_ni_detail(dz_code: str) -> dict:
     if lgd_name:
         categories["Geography"] = {"Local Government District": lgd_name}
 
-    for dataset_id in ("population_total", "population_density"):
+    indicator_ids = ["population_total", "population_density", *NI_INDICATOR_MAP.keys()]
+    for dataset_id in indicator_ids:
         dataset = CENSUS_DATASETS.get(dataset_id)
         ni_data = _get_ni_data(dataset_id)
         if not dataset or not ni_data:
@@ -326,7 +359,7 @@ def _build_ni_detail(dz_code: str) -> dict:
     return {
         "lsoa_code": dz_code,
         "name": name,
-        "source": "NISRA Census 2021 — DZ2021 boundary + MS-A01",
+        "source": "NISRA Census 2021 — MS bulk tables (most indicators are LGD-level; population is DZ-level via MS-A01)",
         "categories": categories,
         "precomputed_percentages": True,
     }

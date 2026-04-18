@@ -44,7 +44,7 @@ def _coverage_for(key: str, sc_ids: set, ni_ids: set) -> str:
 
 def build_dataset_catalog(census_datasets: dict) -> dict:
     sc_ids = set(SCOTLAND_INDICATOR_MAP.keys()) | {"population_density", "population_total"}
-    ni_ids = set(NI_INDICATOR_MAP.keys())
+    ni_ids = set(NI_INDICATOR_MAP.keys()) | {"population_density", "population_total"}
     categories = {}
     for key, dataset in census_datasets.items():
         categories.setdefault(dataset["category"], []).append(

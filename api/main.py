@@ -1,6 +1,6 @@
 """
 UK Census Explorer API
-National-scale LSOA (E&W) + Data Zone (Scotland) data
+National-scale LSOA (E&W) + Data Zone (Scotland + Northern Ireland) data
 """
 
 import asyncio
@@ -20,7 +20,9 @@ from pydantic import BaseModel
 
 from northern_ireland import (
     NI_LOCAL_GOVERNMENT_DISTRICTS,
+    compute_ni_population_data,
     download_dz21_boundaries,
+    download_ni_population_xlsx,
     get_ni_lgd_dzs,
 )
 from scotland import (
@@ -75,6 +77,7 @@ DATA_DIR.mkdir(exist_ok=True)
 scotland_oa_to_dz: dict = {}
 scotland_dz_names: dict = {}
 scotland_data_cache: dict = {}
+ni_data_cache: dict = {}
 
 
 class SelectionRequest(BaseModel):
@@ -125,8 +128,22 @@ async def startup_prefetch():
         dz21_file = await download_dz21_boundaries(DATA_DIR)
         await build_ni_geometry_index(dz21_file)
         await build_ni_adjacency(dz21_file)
+        asyncio.create_task(_prefetch_ni_census_data(dz21_file))
     except Exception as exc:
         logger.error(f"NI boundary setup failed: {exc}")
+
+
+async def _prefetch_ni_census_data(dz21_file: Path):
+    try:
+        xlsx_file = await download_ni_population_xlsx(DATA_DIR)
+        pop_data = compute_ni_population_data(dz21_file, xlsx_file)
+        for dataset_id, data in pop_data.items():
+            cache_file = DATA_DIR / f"data_{dataset_id}_national_ni.json"
+            cache_file.write_text(json.dumps(data))
+            ni_data_cache[dataset_id] = data
+            logger.info(f"  NI {dataset_id}: {len(data['values'])} DZs (from MS-A01 + boundary area)")
+    except Exception as exc:
+        logger.error(f"NI population data setup failed: {exc}")
 
 
 async def _prefetch_scotland_census_data():
@@ -227,10 +244,55 @@ def _filter_scotland_data_for_council(lad_code: str, sc_data: dict) -> dict:
     return filtered
 
 
-def _build_ni_detail(dz_code: str) -> dict:
-    """Minimal detail payload for an NI Data Zone — boundary metadata only.
+def _get_ni_data(dataset_id: str) -> Optional[dict]:
+    cached = ni_data_cache.get(dataset_id)
+    if cached:
+        return cached
+    cache_file = DATA_DIR / f"data_{dataset_id}_national_ni.json"
+    if cache_file.exists():
+        data = json.loads(cache_file.read_text())
+        ni_data_cache[dataset_id] = data
+        return data
 
-    Indicator-level detail will populate once NI_INDICATOR_MAP is implemented.
+    if dataset_id in ("population_density", "population_total"):
+        dz21_file = DATA_DIR / "boundaries_ni_dz21.geojson"
+        xlsx_file = DATA_DIR / "ni_ms_a01.xlsx"
+        if dz21_file.exists() and xlsx_file.exists():
+            pop_data = compute_ni_population_data(dz21_file, xlsx_file)
+            if dataset_id in pop_data:
+                result = pop_data[dataset_id]
+                cache_file.write_text(json.dumps(result))
+                ni_data_cache[dataset_id] = result
+                return result
+
+    return None
+
+
+def _get_ni_lgd_dz_codes(lad_code: str) -> set[str]:
+    dz21_file = DATA_DIR / "boundaries_ni_dz21.geojson"
+    if not dz21_file.exists():
+        return set()
+    return set(get_ni_lgd_dzs(lad_code, dz21_file))
+
+
+def _filter_ni_data_for_lgd(lad_code: str, ni_data: dict) -> dict:
+    allowed_codes = _get_ni_lgd_dz_codes(lad_code)
+    if not allowed_codes:
+        return {**ni_data, "values": {}, "names": {}, "stats": {}}
+    values = {code: value for code, value in ni_data.get("values", {}).items() if code in allowed_codes}
+    names = {code: name for code, name in ni_data.get("names", {}).items() if code in allowed_codes}
+    return {
+        **ni_data,
+        "values": values,
+        "names": names,
+        "stats": compute_stats(list(values.values())) if values else {},
+    }
+
+
+def _build_ni_detail(dz_code: str) -> dict:
+    """Detail payload for an NI Data Zone — boundary metadata + population.
+
+    Other indicators will populate once NI_INDICATOR_MAP is implemented.
     """
     name = dz_code
     lgd_name = ""
@@ -247,11 +309,25 @@ def _build_ni_detail(dz_code: str) -> dict:
         except Exception:
             pass
 
+    categories: dict = {}
+    if lgd_name:
+        categories["Geography"] = {"Local Government District": lgd_name}
+
+    for dataset_id in ("population_total", "population_density"):
+        dataset = CENSUS_DATASETS.get(dataset_id)
+        ni_data = _get_ni_data(dataset_id)
+        if not dataset or not ni_data:
+            continue
+        value = ni_data.get("values", {}).get(dz_code)
+        if value is None:
+            continue
+        categories.setdefault(dataset["category"], {})[dataset["label"]] = value
+
     return {
         "lsoa_code": dz_code,
         "name": name,
-        "source": "NISRA Census 2021 — boundary metadata only (indicator data pending)",
-        "categories": {"Geography": {"Local Government District": lgd_name}} if lgd_name else {},
+        "source": "NISRA Census 2021 — DZ2021 boundary + MS-A01",
+        "categories": categories,
         "precomputed_percentages": True,
     }
 
@@ -294,12 +370,15 @@ async def get_lsoa_data(dataset_id: str, lad_code: Optional[str] = Query(None)):
         return {"dataset_id": dataset_id, "values": {}, "names": {}, "stats": {}, "source": "No Scotland data"}
 
     if lad_code and lad_code.startswith("N09"):
+        ni_data = _get_ni_data(dataset_id)
+        if ni_data:
+            return _filter_ni_data_for_lgd(lad_code, ni_data)
         return {
             "dataset_id": dataset_id,
             "values": {},
             "names": {},
             "stats": {},
-            "source": "Northern Ireland indicator data not yet integrated",
+            "source": "Northern Ireland data not available for this dataset",
         }
 
     scope = lad_code or "national"
@@ -319,12 +398,26 @@ async def get_lsoa_data(dataset_id: str, lad_code: Optional[str] = Query(None)):
 
     if not lad_code:
         sc_data = _get_scotland_data(dataset_id)
-        if sc_data and sc_data.get("values"):
-            merged = {**ew_result}
-            merged["values"] = {**ew_result.get("values", {}), **sc_data["values"]}
-            merged["names"] = {**ew_result.get("names", {}), **sc_data["names"]}
-            merged["stats"] = compute_stats(list(merged["values"].values())) if merged["values"] else {}
-            merged["source"] = "ONS Census 2021 (E&W) + Scotland's Census 2022"
+        ni_data = _get_ni_data(dataset_id)
+        if (sc_data and sc_data.get("values")) or (ni_data and ni_data.get("values")):
+            merged_values = {**ew_result.get("values", {})}
+            merged_names = {**ew_result.get("names", {})}
+            sources = ["ONS Census 2021 (E&W)"]
+            if sc_data and sc_data.get("values"):
+                merged_values.update(sc_data["values"])
+                merged_names.update(sc_data["names"])
+                sources.append("Scotland's Census 2022")
+            if ni_data and ni_data.get("values"):
+                merged_values.update(ni_data["values"])
+                merged_names.update(ni_data["names"])
+                sources.append("NISRA Census 2021")
+            merged = {
+                **ew_result,
+                "values": merged_values,
+                "names": merged_names,
+                "stats": compute_stats(list(merged_values.values())) if merged_values else {},
+                "source": " + ".join(sources),
+            }
             return merged
 
     return ew_result
@@ -469,6 +562,7 @@ async def health():
         "scotland_boundaries_ready": (DATA_DIR / "boundaries_scotland_dz22.geojson").exists(),
         "scotland_data_indicators": len(scotland_data_cache),
         "ni_boundaries_ready": (DATA_DIR / "boundaries_ni_dz21.geojson").exists(),
+        "ni_data_indicators": len(ni_data_cache),
     }
 
 

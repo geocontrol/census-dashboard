@@ -1,19 +1,23 @@
 """
-Northern Ireland Census 2021 — Data Zone (DZ2021) boundaries.
+Northern Ireland Census 2021 — Data Zone (DZ2021) boundaries and
+population data (MS-A01).
 
 NISRA publishes DZ2021 boundaries directly as GeoJSON in WGS84 (CRS84),
-so no reprojection is required (unlike Scotland's BNG shapefiles).
+so no reprojection is required (unlike Scotland's BNG shapefiles). The
+MS-A01 usual-resident-population table is published as XLSX with a
+clean DZ-level sheet, so no OA→DZ aggregation is needed either.
 
-This sub-module currently covers boundary ingestion and the LGD2014
-catalogue. Indicator ingestion from NISRA bulk CSVs is a separate
-sub-task and is intentionally not implemented here yet.
+Indicator ingestion from NISRA cross-tab CSVs is a separate sub-task
+and is intentionally not implemented here yet.
 """
 import json
 import logging
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 import httpx
+from openpyxl import load_workbook
 from shapely.geometry import MultiPolygon, Polygon, mapping, shape
 
 logger = logging.getLogger(__name__)
@@ -25,6 +29,7 @@ DZ2021_LOOKUP_XLSX_URL = (
     "https://www.nisra.gov.uk/files/nisra/documents/2025-04/"
     "geography-data-zone-and-super-data-zone-lookups-v3.xlsx"
 )
+MS_A01_URL = "https://www.nisra.gov.uk/system/files/statistics/census-2021-ms-a01.xlsx"
 
 TARGET_VERTICES = 30
 
@@ -181,3 +186,119 @@ def get_ni_lgd_dzs(lgd_code: str, dz21_geojson_path: Path) -> list[str]:
 # table references and column extraction rules.
 
 NI_INDICATOR_MAP: dict = {}
+
+
+# ═══════ Population data (MS-A01) ═══════
+
+
+async def download_ni_population_xlsx(data_dir: Path) -> Path:
+    """Download NISRA MS-A01 (Usual resident population by Data Zone)."""
+    output = data_dir / "ni_ms_a01.xlsx"
+    if output.exists():
+        logger.info(f"NI MS-A01 cached ({output.stat().st_size / 1024:.0f} KB)")
+        return output
+
+    logger.info("Downloading NI MS-A01 population (~470 KB)...")
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        resp = await client.get(MS_A01_URL)
+        resp.raise_for_status()
+        output.write_bytes(resp.content)
+        logger.info(f"  Downloaded {output.stat().st_size / 1024:.0f} KB")
+    return output
+
+
+def parse_ni_population_dz(xlsx_path: Path) -> dict[str, int]:
+    """Parse the DZ sheet of MS-A01. Returns {dz_code: usual_residents}."""
+    wb = load_workbook(xlsx_path, read_only=True, data_only=True)
+    ws = wb["DZ"]
+
+    populations: dict[str, int] = {}
+    for row in ws.iter_rows(min_row=7, values_only=True):
+        if not row or len(row) < 3:
+            continue
+        code = (row[1] or "").strip() if isinstance(row[1], str) else None
+        if not code or not code.startswith("N20"):
+            continue
+        try:
+            populations[code] = int(row[2])
+        except (TypeError, ValueError):
+            continue
+    return populations
+
+
+def _stats(values: dict[str, float]) -> dict:
+    sv = sorted(values.values())
+    n = len(sv)
+    if n == 0:
+        return {}
+    return {
+        "min": sv[0], "max": sv[-1],
+        "mean": round(sum(sv) / n, 2),
+        "p10": sv[int(n * 0.1)], "p25": sv[int(n * 0.25)],
+        "p50": sv[int(n * 0.5)], "p75": sv[int(n * 0.75)],
+        "p90": sv[int(n * 0.9)], "count": n,
+    }
+
+
+def compute_ni_population_data(
+    dz21_geojson_path: Path,
+    ms_a01_xlsx_path: Path,
+) -> dict[str, dict]:
+    """Build population_total + population_density payloads for NI Data Zones.
+
+    Population comes from MS-A01; area_km2 comes from the boundary GeoJSON
+    (already populated during boundary ingestion).
+    """
+    geojson = json.loads(dz21_geojson_path.read_text())
+    areas: dict[str, float] = {}
+    names: dict[str, str] = {}
+    for feat in geojson.get("features", []):
+        props = feat.get("properties", {}) or {}
+        code = props.get("DZ2021CD")
+        if not code:
+            continue
+        names[code] = props.get("DZ2021NM", code)
+        try:
+            areas[code] = float(props.get("area_km2") or 0.0)
+        except (TypeError, ValueError):
+            areas[code] = 0.0
+
+    populations = parse_ni_population_dz(ms_a01_xlsx_path)
+
+    total_values: dict[str, float] = {}
+    density_values: dict[str, float] = {}
+    for code, pop in populations.items():
+        if code not in areas:
+            continue
+        total_values[code] = float(pop)
+        area = areas[code]
+        density_values[code] = round(pop / area, 2) if area > 0 else 0.0
+
+    source = "NISRA Census 2021 — MS-A01 (population) + DZ2021 boundary area"
+    return {
+        "population_total": {
+            "dataset_id": "population_total",
+            "values": total_values,
+            "names": {c: names.get(c, c) for c in total_values},
+            "stats": _stats(total_values),
+            "source": source,
+        },
+        "population_density": {
+            "dataset_id": "population_density",
+            "values": density_values,
+            "names": {c: names.get(c, c) for c in density_values},
+            "stats": _stats(density_values),
+            "source": source,
+        },
+    }
+
+
+def get_ni_data_for_dataset(
+    dataset_id: str,
+    data_dir: Path,
+) -> Optional[dict]:
+    """Load cached NI data payload for a dataset, if present."""
+    cache_file = data_dir / f"data_{dataset_id}_national_ni.json"
+    if cache_file.exists():
+        return json.loads(cache_file.read_text())
+    return None

@@ -310,6 +310,21 @@ NI_INDICATOR_MAP: dict = {
     "hh_one_person":     {"table": "A26", "numerator": ["One person household"]},
     "hh_lone_parent":    {"table": "A26", "numerator": ["Lone parent family"]},
     "hh_married_couple": {"table": "A26", "numerator": ["Married or civil partnership couple"]},
+    "hh_cohabiting":     {"table": "A26", "numerator": ["Cohabiting couple family"]},
+    # ── Age (MS-A02 — five-year bands) ──
+    "age_0_14":    {"table": "A02", "numerator": ["0-4 years", "5-9 years", "10-14 years"]},
+    "age_15_24":   {"table": "A02", "numerator": ["15-19 years", "20-24 years"]},
+    "age_25_44":   {"table": "A02", "numerator": ["25-29 years", "30-34 years", "35-39 years", "40-44 years"]},
+    "age_45_64":   {"table": "A02", "numerator": ["45-49 years", "50-54 years", "55-59 years", "60-64 years"]},
+    "age_65_plus": {"table": "A02", "numerator": ["65-69 years", "70-74 years", "75-79 years", "80-84 years", "85-89 years", "90+ years"]},
+    # ── Language (MS-B14 — proficiency in English) ──
+    # Household-language indicators (no_english, multi_lang_hh) require MS-B11
+    # which NISRA only publishes at NI level, so they stay E&W+SC-only at LGD.
+    "english_not_main":     {"table": "B14", "numerator": ["Main language is not English"]},
+    "cannot_speak_english": {"table": "B14", "numerator": [
+        "Main language is not English: \nCannot speak English well",
+        "Main language is not English: \nCannot speak English",
+    ]},
 }
 
 

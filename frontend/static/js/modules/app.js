@@ -226,4 +226,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   await waitForBoundaries();
   await loadData();
   loadAdjacency();
+  initElectionControls();
 });

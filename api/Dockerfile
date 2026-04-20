@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY scotland.py .
 COPY northern_ireland.py .
+COPY elections.py .
 COPY services/ ./services/
 
 RUN mkdir -p /app/data

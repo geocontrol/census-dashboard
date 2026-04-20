@@ -1,24 +1,29 @@
 /* ══════════════════════════════════════════════
    elections.js — Election overlay module
    Phase A: GE 2024 constituency results
+   Phase B: Local Elections 2024 (England)
    ══════════════════════════════════════════════ */
 
 const PARTY_COLOURS = {
-  Lab:      { name: 'Labour',          colour: '#E4003B' },
-  Con:      { name: 'Conservative',    colour: '#0087DC' },
-  LD:       { name: 'Liberal Democrat',colour: '#FAA61A' },
-  RUK:      { name: 'Reform UK',       colour: '#12B6CF' },
-  Green:    { name: 'Green',           colour: '#00B140' },
-  SNP:      { name: 'SNP',             colour: '#FDF38E' },
-  PC:       { name: 'Plaid Cymru',     colour: '#005B54' },
-  SF:       { name: 'Sinn Féin',       colour: '#326760' },
-  DUP:      { name: 'DUP',             colour: '#D46A4C' },
-  SDLP:     { name: 'SDLP',            colour: '#2AA82C' },
-  Alliance: { name: 'Alliance',        colour: '#F6CB2F' },
-  UUP:      { name: 'UUP',             colour: '#48A5EE' },
-  TUV:      { name: 'TUV',             colour: '#0C3A6A' },
-  Ind:      { name: 'Independent',     colour: '#AAAAAA' },
-  Spk:      { name: 'Speaker',         colour: '#909090' },
+  Lab:   { name: 'Labour',          colour: '#E4003B' },
+  Con:   { name: 'Conservative',    colour: '#0087DC' },
+  LD:    { name: 'Liberal Democrat',colour: '#FAA61A' },
+  RUK:   { name: 'Reform UK',       colour: '#12B6CF' },
+  Green: { name: 'Green',           colour: '#00B140' },
+  SNP:   { name: 'SNP',             colour: '#FDF38E' },
+  PC:    { name: 'Plaid Cymru',     colour: '#005B54' },
+  SF:    { name: 'Sinn Féin',       colour: '#326760' },
+  DUP:   { name: 'DUP',             colour: '#D46A4C' },
+  SDLP:  { name: 'SDLP',            colour: '#2AA82C' },
+  APNI:  { name: 'Alliance',        colour: '#F6CB2F' },
+  Alliance: { name: 'Alliance',     colour: '#F6CB2F' },
+  UUP:   { name: 'UUP',             colour: '#48A5EE' },
+  TUV:   { name: 'TUV',             colour: '#0C3A6A' },
+  UKIP:  { name: 'UKIP',            colour: '#6D3177' },
+  WPB:   { name: "Workers' Party",  colour: '#8B0000' },
+  Ind:   { name: 'Independent',     colour: '#AAAAAA' },
+  Spk:   { name: 'Speaker',         colour: '#909090' },
+  Other: { name: 'Other',           colour: '#666666' },
 };
 
 function _partyColour(abbr) {
@@ -29,32 +34,34 @@ function _partyName(abbr) {
   return (PARTY_COLOURS[abbr] || {}).name || abbr;
 }
 
-// ── Turnout / majority colour scale (sequential blue) ──────────────────────
+// ── Sequential colour scale (turnout / majority) ───────────────────────────
 const _SEQ_COLOURS = ['#c6dbef','#9ecae1','#6baed6','#4292c6','#2171b5','#084594'];
 
 function _seqColour(value, min, max) {
   const t = max > min ? (value - min) / (max - min) : 0;
-  const idx = Math.min(_SEQ_COLOURS.length - 1, Math.floor(t * _SEQ_COLOURS.length));
-  return _SEQ_COLOURS[idx];
+  return _SEQ_COLOURS[Math.min(_SEQ_COLOURS.length - 1, Math.floor(t * _SEQ_COLOURS.length))];
 }
 
-// ── Metric range computation (for turnout / majority scales) ───────────────
 function _computeRange(features, accessor) {
   let min = Infinity, max = -Infinity;
   for (const f of features) {
     const v = accessor(f.properties);
-    if (v != null && isFinite(v)) {
-      if (v < min) min = v;
-      if (v > max) max = v;
-    }
+    if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
   }
   return { min, max };
 }
 
-// ── Style function ──────────────────────────────────────────────────────────
+// ── Style ──────────────────────────────────────────────────────────────────
 function styleElectionFeature(feature) {
   const props = feature.properties || {};
-  let fill = '#444444';
+  const hasResult = !!props.first_party;
+
+  // Wards/constituencies with no results — render as near-invisible
+  if (!hasResult) {
+    return { fillColor: '#333344', fillOpacity: 0.08, color: '#222233', weight: 0.3, opacity: 0.4 };
+  }
+
+  let fill = '#555566';
 
   if (state.electionMetric === 'winner') {
     fill = _partyColour(props.first_party);
@@ -66,48 +73,64 @@ function styleElectionFeature(feature) {
     fill = props.majority_pct != null ? _seqColour(props.majority_pct, min, max) : '#333';
   }
 
-  return { fillColor: fill, fillOpacity: 0.48, color: '#1a1a2e', weight: 0.8, opacity: 0.9 };
+  return { fillColor: fill, fillOpacity: 0.48, color: '#1a1a2e', weight: 0.5, opacity: 0.8 };
 }
 
-// ── Hover popup ─────────────────────────────────────────────────────────────
+// ── Hover popup ────────────────────────────────────────────────────────────
 let _electionHoverPopup = null;
 
 function _onElectionHover(e, feature) {
   const props = feature.properties || {};
-  const party = props.first_party || '?';
-  const partyName = _partyName(party);
+  if (!props.first_party) return;  // skip no-data wards
+
+  const isLocal = state.electionMode === 'local';
+  const areaName = isLocal
+    ? (props.WD24NM || props.ward_name || 'Ward')
+    : (props.PCON24NM || props.constituency_name || 'Constituency');
+  const areaCode = isLocal ? (props.WD24CD || '') : (props.PCON24CD || '');
+
+  const party = props.first_party;
   const colour = _partyColour(party);
+  const partyName = _partyName(party);
   const turnout = props.turnout != null ? props.turnout.toFixed(1) + '%' : '—';
-  const majority = props.majority_pct != null ? props.majority_pct.toFixed(1) + '%' : '—';
+
+  let secondLine = `Turnout ${turnout}`;
+  if (isLocal && props.total_seats > 1) {
+    secondLine += ` · ${props.total_seats} seats`;
+  } else if (!isLocal && props.majority_pct != null) {
+    secondLine += ` · Majority ${props.majority_pct.toFixed(1)}%`;
+  }
 
   if (_electionHoverPopup) state.map.closePopup(_electionHoverPopup);
   _electionHoverPopup = L.popup({ closeButton: false, offset: [0, -4] })
     .setLatLng(e.latlng)
     .setContent(
       `<div class="lsoa-popup">` +
-      `<div class="lsoa-popup-name">${props.PCON24NM || props.constituency_name || 'Constituency'}</div>` +
-      `<div class="lsoa-popup-code" style="color:#8892a8">${props.PCON24CD || ''}</div>` +
+      `<div class="lsoa-popup-name">${areaName}</div>` +
+      `<div class="lsoa-popup-code" style="color:#8892a8">${areaCode}</div>` +
       `<div style="margin-top:6px;display:flex;align-items:center;gap:6px">` +
       `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${colour}"></span>` +
       `<span style="font-weight:600">${partyName}</span></div>` +
-      `<div style="margin-top:4px;font-size:11px;color:#8892a8">Turnout ${turnout} · Majority ${majority}</div>` +
+      `<div style="margin-top:4px;font-size:11px;color:#8892a8">${secondLine}</div>` +
       `</div>`
     )
     .openOn(state.map);
 }
 
 function _onElectionHoverOut() {
-  if (_electionHoverPopup) {
-    state.map.closePopup(_electionHoverPopup);
-    _electionHoverPopup = null;
-  }
+  if (_electionHoverPopup) { state.map.closePopup(_electionHoverPopup); _electionHoverPopup = null; }
 }
 
-// ── Click → show results in right sidebar ──────────────────────────────────
+// ── Click → right sidebar ─────────────────────────────────────────────────
 function _onElectionClick(feature) {
   const props = feature.properties || {};
-  const name = props.PCON24NM || props.constituency_name || 'Constituency';
-  const code = props.PCON24CD || '';
+  if (!props.first_party) return;
+
+  const isLocal = state.electionMode === 'local';
+  const name = isLocal
+    ? (props.WD24NM || props.ward_name || 'Ward')
+    : (props.PCON24NM || props.constituency_name || 'Constituency');
+  const code = isLocal ? (props.WD24CD || '') : (props.PCON24CD || '');
 
   document.getElementById('sidebar-right').classList.add('open');
   document.getElementById('detail-title').textContent = name;
@@ -121,19 +144,36 @@ function _onElectionClick(feature) {
     const colour = _partyColour(abbr);
     const pName = _partyName(abbr);
     const count = voteCounts[abbr] ? voteCounts[abbr].toLocaleString() : '';
+    const seatsStr = isLocal && props.seats_by_party && props.seats_by_party[abbr]
+      ? ` · ${props.seats_by_party[abbr]} seat${props.seats_by_party[abbr] > 1 ? 's' : ''}`
+      : '';
     return `<div class="detail-row">` +
       `<span class="detail-row-label" title="${pName}">${pName}</span>` +
       `<div class="detail-row-bar-wrap">` +
       `<div class="detail-row-bar" style="width:${Math.round(share)}%;background:${colour};opacity:0.85"></div>` +
       `</div>` +
-      `<span class="detail-row-value">${share.toFixed(1)}%${count ? ' <span style="color:#4d5770;font-size:10px">('+count+')</span>' : ''}</span>` +
-      `</div>`;
+      `<span class="detail-row-value">${share.toFixed(1)}%` +
+      `${count ? ` <span style="color:#4d5770;font-size:10px">(${count})</span>` : ''}` +
+      `${seatsStr ? `<span style="color:var(--accent-2);font-size:10px">${seatsStr}</span>` : ''}` +
+      `</span></div>`;
   }).join('');
 
   const turnout = props.turnout != null ? props.turnout.toFixed(1) + '%' : '—';
-  const majority = props.majority != null ? props.majority.toLocaleString() : '—';
-  const majorityPct = props.majority_pct != null ? ' (' + props.majority_pct.toFixed(1) + '%)' : '';
   const electorate = props.electorate != null ? props.electorate.toLocaleString() : '—';
+  const electionLabel = isLocal ? 'Local Elections 2024' : 'GE 2024';
+  const source = isLocal
+    ? 'Democracy Club · ONS ward boundaries'
+    : 'House of Commons Library CBP-10009 · ONS boundaries';
+
+  let resultRows = '';
+  if (isLocal && props.total_seats > 1) {
+    resultRows += `<div class="detail-row"><span class="detail-row-label">Seats elected</span><span class="detail-row-value">${props.total_seats}</span></div>`;
+  } else if (!isLocal) {
+    const majority = props.majority != null ? props.majority.toLocaleString() : '—';
+    const majorityPct = props.majority_pct != null ? ` (${props.majority_pct.toFixed(1)}%)` : '';
+    resultRows += `<div class="detail-row"><span class="detail-row-label">Majority</span><span class="detail-row-value">${majority}${majorityPct}</span></div>`;
+  }
+  resultRows += `<div class="detail-row"><span class="detail-row-label">Electorate</span><span class="detail-row-value">${electorate}</span></div>`;
 
   body.innerHTML =
     `<div class="detail-meta">` +
@@ -141,55 +181,60 @@ function _onElectionClick(feature) {
     `<div class="detail-meta-item"><div class="detail-meta-label">Turnout</div><div class="detail-meta-value" style="color:var(--accent)">${turnout}</div></div>` +
     `</div>` +
     `<div class="detail-category">` +
-    `<div class="detail-category-title">Vote shares — GE 2024</div>` +
+    `<div class="detail-category-title">Vote shares — ${electionLabel}</div>` +
     `<div class="detail-rows">${barsHtml}</div>` +
     `</div>` +
     `<div class="detail-category">` +
     `<div class="detail-category-title">Result</div>` +
-    `<div class="detail-rows">` +
-    `<div class="detail-row"><span class="detail-row-label">Majority</span><span class="detail-row-value">${majority}${majorityPct}</span></div>` +
-    `<div class="detail-row"><span class="detail-row-label">Electorate</span><span class="detail-row-value">${electorate}</span></div>` +
-    `</div></div>` +
-    `<div class="detail-source">Source: House of Commons Library CBP-10009 · ONS boundaries</div>`;
+    `<div class="detail-rows">${resultRows}</div>` +
+    `</div>` +
+    `<div class="detail-source">Source: ${source}</div>`;
 }
 
-// ── Legend ──────────────────────────────────────────────────────────────────
+// ── Legend ─────────────────────────────────────────────────────────────────
 function renderElectionLegend() {
   const container = document.getElementById('election-legend');
   if (!container) return;
 
   if (state.electionMetric === 'winner') {
     const represented = new Set(
-      (state.electionData?.features || []).map(f => f.properties?.first_party).filter(Boolean)
+      (state.electionData?.features || [])
+        .map(f => f.properties?.first_party)
+        .filter(Boolean)
     );
     const items = Object.entries(PARTY_COLOURS)
       .filter(([abbr]) => represented.has(abbr))
       .map(([abbr, meta]) =>
         `<div class="election-legend-item">` +
         `<span class="election-legend-chip" style="background:${meta.colour}"></span>` +
-        `<span>${meta.name}</span>` +
-        `</div>`
+        `<span>${meta.name}</span></div>`
       ).join('');
     container.innerHTML = `<div class="election-legend-grid">${items}</div>`;
   } else {
     const label = state.electionMetric === 'turnout' ? 'Turnout %' : 'Majority %';
-    const gradient = `linear-gradient(to right, ${_SEQ_COLOURS.join(', ')})`;
     container.innerHTML =
       `<div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">${label}</div>` +
-      `<div style="height:8px;border-radius:3px;background:${gradient}"></div>` +
+      `<div style="height:8px;border-radius:3px;background:linear-gradient(to right,${_SEQ_COLOURS.join(',')})"></div>` +
       `<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:2px"><span>Low</span><span>High</span></div>`;
   }
+
+  // Note about wards with no elections this cycle
+  if (state.electionMode === 'local') {
+    container.innerHTML += `<div style="margin-top:8px;font-size:10px;color:var(--text-muted)">Transparent wards had no election in May 2024</div>`;
+  }
+
   container.style.display = 'block';
 }
 
 function _hideElectionLegend() {
-  const container = document.getElementById('election-legend');
-  if (container) container.style.display = 'none';
+  const el = document.getElementById('election-legend');
+  if (el) el.style.display = 'none';
 }
 
-// ── Layer management ─────────────────────────────────────────────────────────
+// ── Layer management ───────────────────────────────────────────────────────
 async function loadElectionOverlay(mode, year) {
   removeElectionOverlay();
+  setOverlay(true, `Loading ${mode === 'local' ? 'ward' : 'constituency'} election data…`);
 
   const url = `${API}/elections/${mode}/overlay?year=${year}`;
   let geojson;
@@ -199,6 +244,7 @@ async function loadElectionOverlay(mode, year) {
     geojson = await res.json();
   } catch (e) {
     console.error('Election overlay load failed:', e);
+    setOverlay(false);
     return;
   }
 
@@ -206,12 +252,16 @@ async function loadElectionOverlay(mode, year) {
   state.electionMode = mode;
   state.electionYear = year;
 
-  // Dedicated pane above census layer (overlayPane zIndex=400) but below popups
   if (!state.map.getPane('electionPane')) {
     state.map.createPane('electionPane').style.zIndex = '450';
   }
 
+  // Canvas renderer is essential for local elections (8,396 wards)
+  const useCanvas = mode === 'local';
+  const rendererOpts = useCanvas ? { renderer: L.canvas({ padding: 0.5 }) } : {};
+
   state.electionOverlay = L.geoJSON(geojson, {
+    ...rendererOpts,
     pane: 'electionPane',
     style: feature => styleElectionFeature(feature),
     onEachFeature: (feature, layer) => {
@@ -224,17 +274,12 @@ async function loadElectionOverlay(mode, year) {
   }).addTo(state.map);
 
   renderElectionLegend();
+  setOverlay(false);
 }
 
 function removeElectionOverlay() {
-  if (state.electionOverlay) {
-    state.map.removeLayer(state.electionOverlay);
-    state.electionOverlay = null;
-  }
-  if (_electionHoverPopup) {
-    state.map.closePopup(_electionHoverPopup);
-    _electionHoverPopup = null;
-  }
+  if (state.electionOverlay) { state.map.removeLayer(state.electionOverlay); state.electionOverlay = null; }
+  if (_electionHoverPopup) { state.map.closePopup(_electionHoverPopup); _electionHoverPopup = null; }
   state.electionData = null;
   state.electionMode = null;
   state.electionYear = null;
@@ -247,43 +292,41 @@ function _refreshElectionStyle() {
   renderElectionLegend();
 }
 
-// ── UI wiring ────────────────────────────────────────────────────────────────
+// ── UI wiring ──────────────────────────────────────────────────────────────
 async function initElectionControls() {
   const toggle = document.getElementById('election-toggle');
-  const yearSelect = document.getElementById('election-year');
+  const electionSelect = document.getElementById('election-year');
   const metricSelect = document.getElementById('election-metric');
 
-  if (!toggle || !yearSelect || !metricSelect) return;
+  if (!toggle || !electionSelect || !metricSelect) return;
 
-  // Populate year options from API
+  // Populate from API — value is "type:year" to carry both pieces of info
   try {
     const res = await fetch(`${API}/elections/available`);
     if (res.ok) {
       const data = await res.json();
-      yearSelect.innerHTML = '';
+      electionSelect.innerHTML = '';
       data.elections.forEach(el => {
         const opt = document.createElement('option');
-        opt.value = el.year;
+        opt.value = `${el.type}:${el.year}`;
         opt.textContent = el.label;
-        yearSelect.appendChild(opt);
+        electionSelect.appendChild(opt);
       });
     }
   } catch (e) {}
 
+  const _load = async () => {
+    const [type, year] = electionSelect.value.split(':');
+    await loadElectionOverlay(type, year);
+  };
+
   toggle.addEventListener('change', async () => {
-    if (toggle.checked) {
-      const year = yearSelect.value;
-      await loadElectionOverlay('ge', year);
-    } else {
-      removeElectionOverlay();
-    }
+    if (toggle.checked) await _load();
+    else removeElectionOverlay();
   });
 
-  yearSelect.addEventListener('change', async () => {
-    if (toggle.checked) {
-      const year = yearSelect.value;
-      await loadElectionOverlay('ge', year);
-    }
+  electionSelect.addEventListener('change', async () => {
+    if (toggle.checked) await _load();
   });
 
   metricSelect.addEventListener('change', () => {

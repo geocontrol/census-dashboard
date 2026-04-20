@@ -19,12 +19,16 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from elections import (
-    GE_AVAILABLE,
+    ELECTIONS_AVAILABLE,
     PARTY_META,
     build_ge_overlay,
+    build_local_overlay,
     download_constituency_boundaries,
+    download_local_results,
     download_psephology_db,
+    download_ward_boundaries,
     process_ge_results,
+    process_local_results,
 )
 from northern_ireland import (
     NI_INDICATOR_MAP,
@@ -207,7 +211,17 @@ async def _prefetch_election_data():
         election_overlay_cache["ge_2024"] = overlay
         logger.info(f"Election overlay ready: GE 2024 ({len(overlay['features'])} constituencies)")
     except Exception as exc:
-        logger.error(f"Election data prefetch failed: {exc}")
+        logger.error(f"GE election data prefetch failed: {exc}")
+
+    try:
+        ward_file = await download_ward_boundaries(DATA_DIR)
+        results_file = await download_local_results(DATA_DIR, election_date="2024-05-02")
+        local_results = process_local_results(results_file)
+        overlay = build_local_overlay(ward_file, local_results)
+        election_overlay_cache["local_2024"] = overlay
+        logger.info(f"Election overlay ready: local 2024 ({len(overlay['features'])} wards)")
+    except Exception as exc:
+        logger.error(f"Local election data prefetch failed: {exc}")
 
 
 def _scotland_rate_components_available(data: dict) -> bool:
@@ -611,7 +625,7 @@ async def get_lad_list():
 
 @app.get("/api/elections/available")
 async def get_elections_available():
-    return {"elections": GE_AVAILABLE}
+    return {"elections": ELECTIONS_AVAILABLE}
 
 
 @app.get("/api/elections/ge/overlay")
@@ -634,6 +648,30 @@ async def get_ge_overlay(year: str = Query("2024")):
     return overlay
 
 
+@app.get("/api/elections/local/overlay")
+async def get_local_overlay(year: str = Query("2024")):
+    cache_key = f"local_{year}"
+    if cache_key in election_overlay_cache:
+        return election_overlay_cache[cache_key]
+
+    ward_file = DATA_DIR / "elections_wd24_bgc.geojson"
+    election_date = "2024-05-02" if year == "2024" else None
+    if not election_date:
+        raise HTTPException(status_code=400, detail=f"Local election year {year} not supported")
+
+    results_file = DATA_DIR / f"elections_local_{election_date.replace('-', '')}_results.json"
+
+    if not ward_file.exists():
+        raise HTTPException(status_code=503, detail="Ward boundaries not yet loaded")
+    if not results_file.exists():
+        raise HTTPException(status_code=503, detail=f"Local election {year} results not yet loaded")
+
+    local_results = process_local_results(results_file)
+    overlay = build_local_overlay(ward_file, local_results)
+    election_overlay_cache[cache_key] = overlay
+    return overlay
+
+
 @app.get("/api/elections/party_meta")
 async def get_party_meta():
     return PARTY_META
@@ -650,6 +688,7 @@ async def health():
         "ni_boundaries_ready": (DATA_DIR / "boundaries_ni_dz21.geojson").exists(),
         "ni_data_indicators": len(ni_data_cache),
         "election_overlays_ready": list(election_overlay_cache.keys()),
+        "ward_boundaries_ready": (DATA_DIR / "elections_wd24_bgc.geojson").exists(),
     }
 
 

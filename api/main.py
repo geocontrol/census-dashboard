@@ -23,7 +23,7 @@ from elections import (
     PARTY_META,
     build_ge_overlay,
     download_constituency_boundaries,
-    download_ge_results,
+    download_psephology_db,
     process_ge_results,
 )
 from northern_ireland import (
@@ -201,8 +201,8 @@ async def _prefetch_scotland_census_data():
 async def _prefetch_election_data():
     try:
         boundaries_file = await download_constituency_boundaries(DATA_DIR)
-        results_file = await download_ge_results(DATA_DIR, year="2024")
-        results = process_ge_results(results_file)
+        db_file = await download_psephology_db(DATA_DIR)
+        results = process_ge_results(db_file, year="2024")
         overlay = build_ge_overlay(boundaries_file, results)
         election_overlay_cache["ge_2024"] = overlay
         logger.info(f"Election overlay ready: GE 2024 ({len(overlay['features'])} constituencies)")
@@ -621,14 +621,14 @@ async def get_ge_overlay(year: str = Query("2024")):
         return election_overlay_cache[cache_key]
 
     boundaries_file = DATA_DIR / "elections_pcon24_bgc.geojson"
-    results_file = DATA_DIR / f"elections_ge{year}_results.csv"
+    db_file = DATA_DIR / "elections_psephology.db"
 
     if not boundaries_file.exists():
         raise HTTPException(status_code=503, detail="Election boundaries not yet loaded")
-    if not results_file.exists():
-        raise HTTPException(status_code=503, detail=f"GE {year} results not yet loaded")
+    if not db_file.exists():
+        raise HTTPException(status_code=503, detail="Election results DB not yet loaded")
 
-    results = process_ge_results(results_file)
+    results = process_ge_results(db_file, year=year)
     overlay = build_ge_overlay(boundaries_file, results)
     election_overlay_cache[cache_key] = overlay
     return overlay

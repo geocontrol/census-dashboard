@@ -18,6 +18,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from elections import (
+    GE_AVAILABLE,
+    PARTY_META,
+    build_ge_overlay,
+    download_constituency_boundaries,
+    download_ge_results,
+    process_ge_results,
+)
 from northern_ireland import (
     NI_INDICATOR_MAP,
     NI_LOCAL_GOVERNMENT_DISTRICTS,
@@ -82,6 +90,7 @@ scotland_oa_to_dz: dict = {}
 scotland_dz_names: dict = {}
 scotland_data_cache: dict = {}
 ni_data_cache: dict = {}
+election_overlay_cache: dict = {}  # {"{type}_{year}": geojson_dict}
 
 
 class SelectionRequest(BaseModel):
@@ -136,6 +145,8 @@ async def startup_prefetch():
     except Exception as exc:
         logger.error(f"NI boundary setup failed: {exc}")
 
+    asyncio.create_task(_prefetch_election_data())
+
 
 async def _prefetch_ni_census_data(dz21_file: Path):
     try:
@@ -185,6 +196,18 @@ async def _prefetch_scotland_census_data():
         logger.info(f"Scotland census data processed: {len(scotland_data_cache)} indicators total")
     except Exception as exc:
         logger.error(f"Scotland census data processing failed: {exc}")
+
+
+async def _prefetch_election_data():
+    try:
+        boundaries_file = await download_constituency_boundaries(DATA_DIR)
+        results_file = await download_ge_results(DATA_DIR, year="2024")
+        results = process_ge_results(results_file)
+        overlay = build_ge_overlay(boundaries_file, results)
+        election_overlay_cache["ge_2024"] = overlay
+        logger.info(f"Election overlay ready: GE 2024 ({len(overlay['features'])} constituencies)")
+    except Exception as exc:
+        logger.error(f"Election data prefetch failed: {exc}")
 
 
 def _scotland_rate_components_available(data: dict) -> bool:
@@ -586,6 +609,36 @@ async def get_lad_list():
     return result
 
 
+@app.get("/api/elections/available")
+async def get_elections_available():
+    return {"elections": GE_AVAILABLE}
+
+
+@app.get("/api/elections/ge/overlay")
+async def get_ge_overlay(year: str = Query("2024")):
+    cache_key = f"ge_{year}"
+    if cache_key in election_overlay_cache:
+        return election_overlay_cache[cache_key]
+
+    boundaries_file = DATA_DIR / "elections_pcon24_bgc.geojson"
+    results_file = DATA_DIR / f"elections_ge{year}_results.csv"
+
+    if not boundaries_file.exists():
+        raise HTTPException(status_code=503, detail="Election boundaries not yet loaded")
+    if not results_file.exists():
+        raise HTTPException(status_code=503, detail=f"GE {year} results not yet loaded")
+
+    results = process_ge_results(results_file)
+    overlay = build_ge_overlay(boundaries_file, results)
+    election_overlay_cache[cache_key] = overlay
+    return overlay
+
+
+@app.get("/api/elections/party_meta")
+async def get_party_meta():
+    return PARTY_META
+
+
 @app.get("/api/health")
 async def health():
     return {
@@ -596,6 +649,7 @@ async def health():
         "scotland_data_indicators": len(scotland_data_cache),
         "ni_boundaries_ready": (DATA_DIR / "boundaries_ni_dz21.geojson").exists(),
         "ni_data_indicators": len(ni_data_cache),
+        "election_overlays_ready": list(election_overlay_cache.keys()),
     }
 
 

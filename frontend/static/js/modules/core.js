@@ -52,6 +52,11 @@ const state = {
   dissolvedLayer: null,
   dissolveResult: null,
   adjacency: null,
+  electionOverlay: null,
+  electionData: null,
+  electionMode: null,
+  electionYear: null,
+  electionMetric: 'winner',
 };
 
 let hoverPopup = null;

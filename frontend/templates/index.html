@@ -63,6 +63,30 @@
     </div>
 
     <div class="sidebar-section">
+      <h3 class="sidebar-title">Election Overlay</h3>
+      <label class="election-toggle-row">
+        <span class="election-toggle-label">Show election overlay</span>
+        <input type="checkbox" id="election-toggle" class="election-toggle-check" />
+        <span class="election-toggle-switch"></span>
+      </label>
+      <div class="field-group" style="margin-top:10px">
+        <label class="field-label">Election</label>
+        <select id="election-year" class="select-control">
+          <option value="2024">General Election 2024</option>
+        </select>
+      </div>
+      <div class="field-group" style="margin-top:6px">
+        <label class="field-label">Display</label>
+        <select id="election-metric" class="select-control">
+          <option value="winner">Winning party</option>
+          <option value="turnout">Turnout %</option>
+          <option value="majority">Majority %</option>
+        </select>
+      </div>
+      <div id="election-legend" class="election-legend" style="display:none;margin-top:10px"></div>
+    </div>
+
+    <div class="sidebar-section">
       <h3 class="sidebar-title">Dataset</h3>
       <div id="dataset-categories" class="dataset-list">
         <!-- Populated by JS -->
@@ -182,6 +206,7 @@
 <script src="/static/js/modules/rendering.js"></script>
 <script src="/static/js/modules/selection.js"></script>
 <script src="/static/js/modules/explorer.js"></script>
+<script src="/static/js/modules/elections.js"></script>
 <script src="/static/js/modules/app.js"></script>
 </body>
 </html>

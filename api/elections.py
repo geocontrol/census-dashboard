@@ -33,7 +33,10 @@ _PSEPHOLOGY_DB_URL = (
 )
 
 # psephology general_elections.id for each polling date
-_GE_IDS = {"2024": 6}
+_GE_IDS = {
+    "2024": 6,
+    "2019": 5,  # notional results on 2024 boundaries
+}
 
 # Party abbreviation → display name + brand colour
 PARTY_META: dict[str, dict] = {
@@ -57,6 +60,7 @@ PARTY_META: dict[str, dict] = {
 
 ELECTIONS_AVAILABLE = [
     {"type": "ge",    "year": "2024", "label": "General Election 2024"},
+    {"type": "ge",    "year": "2019", "label": "General Election 2019"},
     {"type": "local", "year": "2024", "label": "Local Elections 2024 (England)"},
 ]
 
@@ -471,6 +475,65 @@ def build_local_overlay(boundaries_path: Path, results: dict[str, dict]) -> dict
             matched += 1
     logger.info(f"Local overlay: {matched}/{len(geojson.get('features', []))} wards matched to results")
     return geojson
+
+
+# ── Phase C: Swing ─────────────────────────────────────────────────────────
+
+def compute_ge_swing(results_new: dict, results_old: dict) -> dict[str, dict]:
+    """
+    Compute per-constituency swing between two GE results dicts.
+
+    Swing formula: (Lab_change - Con_change) / 2
+    Positive = swing to Labour, Negative = swing to Conservative.
+
+    Also stores raw per-party share changes and the old results for the
+    comparison panel in the frontend.
+    """
+    swing: dict[str, dict] = {}
+
+    for code, r_new in results_new.items():
+        r_old = results_old.get(code)
+        if not r_old:
+            continue
+
+        vs_new = r_new.get("vote_share", {})
+        vs_old = r_old.get("vote_share", {})
+
+        lab_new = vs_new.get("Lab", 0.0)
+        lab_old = vs_old.get("Lab", 0.0)
+        con_new = vs_new.get("Con", 0.0)
+        con_old = vs_old.get("Con", 0.0)
+
+        swing_val = round((lab_new - lab_old - (con_new - con_old)) / 2, 1)
+
+        # Per-party share changes for all parties present in either election
+        share_changes: dict[str, float] = {}
+        for party in set(vs_new) | set(vs_old):
+            delta = round(vs_new.get(party, 0.0) - vs_old.get(party, 0.0), 1)
+            if abs(delta) >= 0.1:
+                share_changes[party] = delta
+
+        swing[code] = {
+            "swing_to_lab": swing_val,
+            "vote_share_prev": vs_old,
+            "first_party_prev": r_old.get("first_party", ""),
+            "share_changes": share_changes,
+        }
+
+    return swing
+
+
+def embed_swing_in_overlay(overlay: dict, swing_data: dict) -> dict:
+    """Merge swing properties into an existing GE overlay's features in-place."""
+    matched = 0
+    for feature in overlay.get("features", []):
+        code = (feature.get("properties") or {}).get("PCON24CD", "")
+        s = swing_data.get(code)
+        if s:
+            feature["properties"].update(s)
+            matched += 1
+    logger.info(f"Swing data embedded: {matched} constituencies")
+    return overlay
 
 
 def _parse_pct(s: object) -> Optional[float]:

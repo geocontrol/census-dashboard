@@ -42,6 +42,18 @@ function _seqColour(value, min, max) {
   return _SEQ_COLOURS[Math.min(_SEQ_COLOURS.length - 1, Math.floor(t * _SEQ_COLOURS.length))];
 }
 
+// ── Diverging swing scale (blue = Con gain, red = Lab gain) ───────────────
+// 7-step: strong Con → neutral → strong Lab
+const _SWING_COLOURS = ['#084594','#4292c6','#9ecae1','#e0e0e0','#fc8d59','#d7301f','#7f0000'];
+
+function _swingColour(value) {
+  // value in pp — clamp to ±10 for full scale
+  const clamped = Math.max(-10, Math.min(10, value));
+  const t = (clamped + 10) / 20;  // 0 = Con +10, 1 = Lab +10
+  const idx = Math.min(_SWING_COLOURS.length - 1, Math.floor(t * _SWING_COLOURS.length));
+  return _SWING_COLOURS[idx];
+}
+
 function _computeRange(features, accessor) {
   let min = Infinity, max = -Infinity;
   for (const f of features) {
@@ -71,6 +83,8 @@ function styleElectionFeature(feature) {
   } else if (state.electionMetric === 'majority' && state.electionData) {
     const { min, max } = _computeRange(state.electionData.features, p => p.majority_pct);
     fill = props.majority_pct != null ? _seqColour(props.majority_pct, min, max) : '#333';
+  } else if (state.electionMetric === 'swing') {
+    fill = props.swing_to_lab != null ? _swingColour(props.swing_to_lab) : '#444';
   }
 
   return { fillColor: fill, fillOpacity: 0.48, color: '#1a1a2e', weight: 0.5, opacity: 0.8 };
@@ -95,7 +109,10 @@ function _onElectionHover(e, feature) {
   const turnout = props.turnout != null ? props.turnout.toFixed(1) + '%' : '—';
 
   let secondLine = `Turnout ${turnout}`;
-  if (isLocal && props.total_seats > 1) {
+  if (state.electionMetric === 'swing' && props.swing_to_lab != null) {
+    const s = props.swing_to_lab;
+    secondLine = `Swing ${s >= 0 ? '+' : ''}${s.toFixed(1)}pp ${s >= 0 ? 'to Lab' : 'to Con'}`;
+  } else if (isLocal && props.total_seats > 1) {
     secondLine += ` · ${props.total_seats} seats`;
   } else if (!isLocal && props.majority_pct != null) {
     secondLine += ` · Majority ${props.majority_pct.toFixed(1)}%`;
@@ -160,10 +177,11 @@ function _onElectionClick(feature) {
 
   const turnout = props.turnout != null ? props.turnout.toFixed(1) + '%' : '—';
   const electorate = props.electorate != null ? props.electorate.toLocaleString() : '—';
-  const electionLabel = isLocal ? 'Local Elections 2024' : 'GE 2024';
+  const electionYear = state.electionYear || '2024';
+  const electionLabel = isLocal ? `Local Elections ${electionYear}` : `GE ${electionYear}`;
   const source = isLocal
     ? 'Democracy Club · ONS ward boundaries'
-    : 'House of Commons Library CBP-10009 · ONS boundaries';
+    : 'UK Parliament psephology DB · ONS boundaries';
 
   let resultRows = '';
   if (isLocal && props.total_seats > 1) {
@@ -174,6 +192,48 @@ function _onElectionClick(feature) {
     resultRows += `<div class="detail-row"><span class="detail-row-label">Majority</span><span class="detail-row-value">${majority}${majorityPct}</span></div>`;
   }
   resultRows += `<div class="detail-row"><span class="detail-row-label">Electorate</span><span class="detail-row-value">${electorate}</span></div>`;
+
+  // Swing section — only for GE 2024 with embedded swing data
+  let swingHtml = '';
+  if (!isLocal && props.swing_to_lab != null) {
+    const s = props.swing_to_lab;
+    const swingDir = s >= 0 ? 'to Labour' : 'to Conservative';
+    const swingColour = s >= 0 ? '#E4003B' : '#0087DC';
+    const prevParty = props.first_party_prev || '';
+    const prevName = _partyName(prevParty);
+    const prevColour = _partyColour(prevParty);
+    const prevVsNew = prevParty !== props.first_party
+      ? `<div style="margin-top:4px;font-size:11px;color:var(--text-muted)">` +
+        `Held by <span style="color:${prevColour}">${prevName}</span> in 2019</div>`
+      : '';
+
+    const changeRows = Object.entries(props.share_changes || {})
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+      .slice(0, 6)
+      .map(([abbr, delta]) => {
+        const colour = _partyColour(abbr);
+        const sign = delta >= 0 ? '+' : '';
+        const arrow = delta >= 0 ? '▲' : '▼';
+        const arrowColour = delta >= 0 ? '#34c98a' : '#f05454';
+        return `<div class="detail-row">` +
+          `<span class="detail-row-label">${_partyName(abbr)}</span>` +
+          `<span class="detail-row-value">` +
+          `<span style="color:${arrowColour};font-size:10px">${arrow}</span> ` +
+          `${sign}${delta.toFixed(1)}pp</span></div>`;
+      }).join('');
+
+    swingHtml =
+      `<div class="detail-category">` +
+      `<div class="detail-category-title">Swing 2019→2024</div>` +
+      `<div class="detail-rows">` +
+      `<div class="detail-row">` +
+      `<span class="detail-row-label">Butler swing</span>` +
+      `<span class="detail-row-value" style="color:${swingColour};font-weight:600">` +
+      `${s >= 0 ? '+' : ''}${s.toFixed(1)}pp ${swingDir}</span></div>` +
+      `${prevVsNew}` +
+      `${changeRows}` +
+      `</div></div>`;
+  }
 
   body.innerHTML =
     `<div class="detail-meta">` +
@@ -188,6 +248,7 @@ function _onElectionClick(feature) {
     `<div class="detail-category-title">Result</div>` +
     `<div class="detail-rows">${resultRows}</div>` +
     `</div>` +
+    `${swingHtml}` +
     `<div class="detail-source">Source: ${source}</div>`;
 }
 
@@ -210,6 +271,12 @@ function renderElectionLegend() {
         `<span>${meta.name}</span></div>`
       ).join('');
     container.innerHTML = `<div class="election-legend-grid">${items}</div>`;
+  } else if (state.electionMetric === 'swing') {
+    container.innerHTML =
+      `<div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">Swing 2019→2024</div>` +
+      `<div style="height:8px;border-radius:3px;background:linear-gradient(to right,${_SWING_COLOURS.join(',')})"></div>` +
+      `<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:2px">` +
+      `<span style="color:#4292c6">Con gain</span><span style="color:#d7301f">Lab gain</span></div>`;
   } else {
     const label = state.electionMetric === 'turnout' ? 'Turnout %' : 'Majority %';
     container.innerHTML =
@@ -273,8 +340,30 @@ async function loadElectionOverlay(mode, year) {
     },
   }).addTo(state.map);
 
+  _updateMetricOptions(mode, geojson);
   renderElectionLegend();
   setOverlay(false);
+}
+
+function _updateMetricOptions(mode, geojson) {
+  const metricSelect = document.getElementById('election-metric');
+  if (!metricSelect) return;
+
+  const swingOpt = metricSelect.querySelector('option[value="swing"]');
+  const hasSwing = mode === 'ge' && (geojson?.features || []).some(f => f.properties?.swing_to_lab != null);
+
+  if (hasSwing && !swingOpt) {
+    const opt = document.createElement('option');
+    opt.value = 'swing';
+    opt.textContent = 'Swing 2019→2024';
+    metricSelect.appendChild(opt);
+  } else if (!hasSwing && swingOpt) {
+    swingOpt.remove();
+    if (state.electionMetric === 'swing') {
+      state.electionMetric = 'winner';
+      metricSelect.value = 'winner';
+    }
+  }
 }
 
 function removeElectionOverlay() {
@@ -284,6 +373,7 @@ function removeElectionOverlay() {
   state.electionMode = null;
   state.electionYear = null;
   _hideElectionLegend();
+  _updateMetricOptions(null, null);
 }
 
 function _refreshElectionStyle() {

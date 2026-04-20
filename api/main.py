@@ -23,10 +23,12 @@ from elections import (
     PARTY_META,
     build_ge_overlay,
     build_local_overlay,
+    compute_ge_swing,
     download_constituency_boundaries,
     download_local_results,
     download_psephology_db,
     download_ward_boundaries,
+    embed_swing_in_overlay,
     process_ge_results,
     process_local_results,
 )
@@ -206,10 +208,19 @@ async def _prefetch_election_data():
     try:
         boundaries_file = await download_constituency_boundaries(DATA_DIR)
         db_file = await download_psephology_db(DATA_DIR)
-        results = process_ge_results(db_file, year="2024")
-        overlay = build_ge_overlay(boundaries_file, results)
-        election_overlay_cache["ge_2024"] = overlay
-        logger.info(f"Election overlay ready: GE 2024 ({len(overlay['features'])} constituencies)")
+
+        results_2024 = process_ge_results(db_file, year="2024")
+        overlay_2024 = build_ge_overlay(boundaries_file, results_2024)
+
+        results_2019 = process_ge_results(db_file, year="2019")
+        overlay_2019 = build_ge_overlay(boundaries_file, results_2019)
+        election_overlay_cache["ge_2019"] = overlay_2019
+        logger.info(f"Election overlay ready: GE 2019 ({len(overlay_2019['features'])} constituencies)")
+
+        swing = compute_ge_swing(results_2024, results_2019)
+        embed_swing_in_overlay(overlay_2024, swing)
+        election_overlay_cache["ge_2024"] = overlay_2024
+        logger.info(f"Election overlay ready: GE 2024 ({len(overlay_2024['features'])} constituencies, swing embedded)")
     except Exception as exc:
         logger.error(f"GE election data prefetch failed: {exc}")
 
@@ -644,6 +655,11 @@ async def get_ge_overlay(year: str = Query("2024")):
 
     results = process_ge_results(db_file, year=year)
     overlay = build_ge_overlay(boundaries_file, results)
+    # Embed swing into 2024 overlay if 2019 is already available
+    if year == "2024" and "ge_2019" in election_overlay_cache:
+        results_2019 = process_ge_results(db_file, year="2019")
+        swing = compute_ge_swing(results, results_2019)
+        embed_swing_in_overlay(overlay, swing)
     election_overlay_cache[cache_key] = overlay
     return overlay
 

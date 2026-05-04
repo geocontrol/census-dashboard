@@ -214,6 +214,7 @@ async function onLADChange(e) {
   state.selectedLSOA = null;
   closeDetail();
   clearSelection();
+  clearQuery();
   await loadData();
 }
 
@@ -221,6 +222,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initMap();
   initSelectionUI();
   initViewToggle();
+  initQueryInterface();
   await loadDatasets();
   await loadLADList();
   await waitForBoundaries();

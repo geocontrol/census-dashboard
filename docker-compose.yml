@@ -13,6 +13,7 @@ services:
       - census-data:/app/data          # Persist downloaded census/boundary data
     environment:
       - PYTHONUNBUFFERED=1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     networks:
       - census-net
     healthcheck:

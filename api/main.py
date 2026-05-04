@@ -55,6 +55,7 @@ from scotland import (
     process_scotland_indicator,
 )
 from services.dataset_config import CENSUS_DATASETS
+from services.query_parser import parse_nl_query
 from services.datasets import (
     aggregate_rate_dataset,
     build_dataset_catalog,
@@ -106,6 +107,37 @@ class SelectionRequest(BaseModel):
 class AggregateRequest(BaseModel):
     lsoa_codes: List[str]
     dataset_ids: Optional[List[str]] = None
+
+
+class QueryRequest(BaseModel):
+    query: str
+    lad_code: Optional[str] = None
+
+
+class ThresholdOption(BaseModel):
+    label: str
+    value: float
+    percentile: str
+
+
+class FilterWithOptions(BaseModel):
+    dataset_id: Optional[str] = None
+    datasets: Optional[List[str]] = None
+    operation: Optional[str] = None
+    operator: str
+    threshold: Optional[float] = None
+    label: str
+    vague_term: Optional[str] = None
+    is_computed: bool
+    threshold_options: List[ThresholdOption]
+
+
+class QueryParseResponse(BaseModel):
+    filters: List[FilterWithOptions]
+    parsed_summary: str
+    clarification_needed: bool
+    unrecognised_terms: List[str]
+    lad_code: Optional[str] = None
 
 
 @app.on_event("startup")
@@ -437,6 +469,96 @@ def _build_scotland_detail(dz_code: str) -> dict:
 @app.get("/api/datasets")
 async def get_datasets():
     return build_dataset_catalog(CENSUS_DATASETS)
+
+
+def _build_threshold_options(stats: dict, operator: str) -> List[ThresholdOption]:
+    options = []
+    for key, label in (("p25", "p25"), ("p50", "median"), ("p75", "p75"), ("p90", "p90")):
+        val = stats.get(key)
+        if val is not None:
+            options.append(ThresholdOption(label=f"{label} ({val:.1f})", value=round(val, 2), percentile=key))
+    return options
+
+
+@app.post("/api/query/parse")
+async def parse_query_endpoint(req: QueryRequest):
+    if not req.query or not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query must not be empty")
+
+    catalog = {
+        k: {"label": v["label"], "unit": v["unit"], "category": v.get("category", "")}
+        for k, v in CENSUS_DATASETS.items()
+    }
+
+    try:
+        parsed = await parse_nl_query(req.query, catalog)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Query parse error: {e}")
+        raise HTTPException(status_code=500, detail="Internal error during query parsing")
+
+    # Collect all referenced dataset IDs
+    all_dataset_ids: set = set()
+    for f in parsed.filters:
+        all_dataset_ids.add(f.dataset_id)
+    for cf in parsed.computed_filters:
+        all_dataset_ids.update(cf.datasets)
+
+    # Fetch stats for each dataset (all cached — instant after first load)
+    stats_per_dataset: dict = {}
+    for ds_id in all_dataset_ids:
+        try:
+            data = await get_lsoa_data(ds_id, req.lad_code)
+            stats_per_dataset[ds_id] = data.get("stats", {}) if isinstance(data, dict) else {}
+        except Exception:
+            stats_per_dataset[ds_id] = {}
+
+    def _merged_stats(dataset_ids: List[str]) -> dict:
+        merged: dict = {}
+        for key in ("p25", "p50", "p75", "p90", "min", "max"):
+            vals = [stats_per_dataset.get(ds_id, {}).get(key) for ds_id in dataset_ids]
+            vals = [v for v in vals if v is not None]
+            if vals:
+                merged[key] = sum(vals)
+        return merged
+
+    response_filters: List[FilterWithOptions] = []
+
+    for f in parsed.filters:
+        stats = stats_per_dataset.get(f.dataset_id, {})
+        response_filters.append(FilterWithOptions(
+            dataset_id=f.dataset_id,
+            operator=f.operator,
+            threshold=f.threshold,
+            label=f.label,
+            vague_term=f.vague_term,
+            is_computed=False,
+            threshold_options=_build_threshold_options(stats, f.operator) if f.vague_term else [],
+        ))
+
+    for cf in parsed.computed_filters:
+        stats = _merged_stats(cf.datasets)
+        response_filters.append(FilterWithOptions(
+            datasets=cf.datasets,
+            operation=cf.operation,
+            operator=cf.operator,
+            threshold=cf.threshold,
+            label=cf.label,
+            vague_term=cf.vague_term,
+            is_computed=True,
+            threshold_options=_build_threshold_options(stats, cf.operator) if cf.vague_term else [],
+        ))
+
+    return QueryParseResponse(
+        filters=response_filters,
+        parsed_summary=parsed.parsed_summary,
+        clarification_needed=parsed.clarification_needed,
+        unrecognised_terms=parsed.unrecognised_terms,
+        lad_code=req.lad_code,
+    )
 
 
 @app.get("/api/lsoa/data/{dataset_id}")

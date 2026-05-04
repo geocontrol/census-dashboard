@@ -83,13 +83,7 @@ async def parse_nl_query(query: str, catalog: dict[str, dict]) -> ParsedQuery:
     response = await client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
-        system=[
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT.format(catalog_json=catalog_json),
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
+        system=SYSTEM_PROMPT.replace("{catalog_json}", catalog_json),
         messages=[{"role": "user", "content": query}],
         timeout=30.0,
     )

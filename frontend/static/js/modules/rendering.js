@@ -53,6 +53,14 @@ function styleFeature(feature) {
   const isSelected = state.selectedLSOAs.has(code);
   const value = state.currentValues[code];
   const fill = value !== undefined ? getColour(value) : '#2a3044';
+
+  if (state.queryActive) {
+    if (isSelected) {
+      return { fillColor: fill, fillOpacity: 0.82, color: '#00ffd5', weight: 2.0, opacity: 1 };
+    }
+    return { fillColor: '#0f1117', fillOpacity: 0.12, color: '#1e2330', weight: 0.3, opacity: 0.6 };
+  }
+
   if (isSelected) {
     return { fillColor: fill, fillOpacity: 0.85, color: '#00ffd5', weight: 2.5, opacity: 1 };
   }
@@ -116,7 +124,9 @@ function renderDetailPanel(detail, mapValue, dsInfo) {
   Object.entries(detail.categories || {}).forEach(([catName, catData]) => {
     const entries = Object.entries(catData);
     if (!entries.length) return;
-    const total = entries.reduce((sum, [, value]) => sum + (value || 0), 0);
+    // Use max value as denominator — the "Total" row is always the largest value
+    // and summing all rows (including total) would double-count it, halving every %
+    const total = Math.max(...entries.map(([, v]) => v || 0));
     html += `<div class="detail-category"><div class="detail-category-title" onclick="toggleCategory(this)">${catName}</div><div class="detail-rows">`;
     entries.forEach(([label, value]) => {
       const pct = usePrecomputedPercentages ? Math.max(0, Math.min(value || 0, 100)) : (total > 0 ? (value / total) * 100 : 0);

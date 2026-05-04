@@ -251,6 +251,7 @@ async function executeQuery(confirmedFilters) {
   }
 
   // Update map selection
+  state.queryActive = true;
   state.selectedLSOAs = matchingCodes;
   if (state.geojsonLayer) {
     state.geojsonLayer.eachLayer(layer => layer.setStyle(styleFeature(layer.feature)));
@@ -258,6 +259,7 @@ async function executeQuery(confirmedFilters) {
   updateSelectionUI();
 
   _showResultsBanner(matchingCodes.size, queryState.parsedSummary);
+  _updateSidebarCount(matchingCodes.size);
   _renderFilterChips(confirmedFilters);
   _setQueryStatus('done', '');
 
@@ -296,11 +298,18 @@ function _renderFilterChips(filters) {
   });
 }
 
+function _updateSidebarCount(count) {
+  const el = document.getElementById('query-sidebar-count');
+  el.querySelector('.query-sidebar-count-num').textContent = count.toLocaleString('en-GB');
+  el.style.display = 'flex';
+}
+
 function clearQuery() {
   queryState.confirmedFilters = [];
   queryState.pendingFilters   = [];
   queryState.parsedSummary    = '';
 
+  state.queryActive = false;
   state.selectedLSOAs.clear();
   if (state.geojsonLayer) {
     state.geojsonLayer.eachLayer(layer => layer.setStyle(styleFeature(layer.feature)));
@@ -312,6 +321,7 @@ function clearQuery() {
   document.getElementById('query-clarification').innerHTML = '';
   document.getElementById('query-filter-chips').innerHTML = '';
   document.getElementById('query-input').value = '';
+  document.getElementById('query-sidebar-count').style.display = 'none';
   _setQueryStatus('done', '');
 }
 

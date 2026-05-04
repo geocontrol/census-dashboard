@@ -53,6 +53,14 @@ function styleFeature(feature) {
   const isSelected = state.selectedLSOAs.has(code);
   const value = state.currentValues[code];
   const fill = value !== undefined ? getColour(value) : '#2a3044';
+
+  if (state.queryActive) {
+    if (isSelected) {
+      return { fillColor: fill, fillOpacity: 0.82, color: '#00ffd5', weight: 2.0, opacity: 1 };
+    }
+    return { fillColor: '#0f1117', fillOpacity: 0.12, color: '#1e2330', weight: 0.3, opacity: 0.6 };
+  }
+
   if (isSelected) {
     return { fillColor: fill, fillOpacity: 0.85, color: '#00ffd5', weight: 2.5, opacity: 1 };
   }

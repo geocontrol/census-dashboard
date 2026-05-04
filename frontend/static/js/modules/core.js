@@ -57,6 +57,7 @@ const state = {
   electionMode: null,
   electionYear: null,
   electionMetric: 'winner',
+  queryActive: false,
 };
 
 let hoverPopup = null;

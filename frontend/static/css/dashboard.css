@@ -1155,6 +1155,28 @@ a:hover { text-decoration: underline; }
   border-radius: 10px;
 }
 
+.query-sidebar-count {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: rgba(0, 255, 213, 0.07);
+  border: 1px solid rgba(0, 255, 213, 0.2);
+  border-radius: var(--radius-sm);
+}
+.query-sidebar-count-num {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: #00ffd5;
+  line-height: 1;
+}
+.query-sidebar-count-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 .query-clarification { margin-top: 10px; }
 
 .query-clarify-heading {

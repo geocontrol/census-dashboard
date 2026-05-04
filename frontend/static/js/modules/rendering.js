@@ -124,7 +124,9 @@ function renderDetailPanel(detail, mapValue, dsInfo) {
   Object.entries(detail.categories || {}).forEach(([catName, catData]) => {
     const entries = Object.entries(catData);
     if (!entries.length) return;
-    const total = entries.reduce((sum, [, value]) => sum + (value || 0), 0);
+    // Use max value as denominator — the "Total" row is always the largest value
+    // and summing all rows (including total) would double-count it, halving every %
+    const total = Math.max(...entries.map(([, v]) => v || 0));
     html += `<div class="detail-category"><div class="detail-category-title" onclick="toggleCategory(this)">${catName}</div><div class="detail-rows">`;
     entries.forEach(([label, value]) => {
       const pct = usePrecomputedPercentages ? Math.max(0, Math.min(value || 0, 100)) : (total > 0 ? (value / total) * 100 : 0);
